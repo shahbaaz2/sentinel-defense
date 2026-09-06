@@ -59,7 +59,7 @@ Then open:
 | Capability | Status |
 |---|---|
 | Repo scaffold, health endpoint, shells | **Phase 0 — done and verified** |
-| MissionNet real synthetic app | Phase 1 — not started |
+| MissionNet real synthetic app | **Phase 1 — done and verified** |
 | Normalized events, deterministic detection, incidents | Phase 2 — not started |
 | Demo Control / SCN-010 scenario | Phase 3 — not started |
 | Sentinel dashboard (posture/incidents/investigation) | Phase 4 — not started |

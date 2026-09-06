@@ -7,13 +7,19 @@ requires-python = ">=3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: requires a running Postgres (docker-compose up), see RUNBOOK.md",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = ["infrastructure/migrations/*/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's Depends()/Header() default-argument pattern is idiomatic, not a real bug here.
+ignore = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

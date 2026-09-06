@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev-up dev-down api dashboard missionnet missionnet-console mlx test lint scenario health reset-lab offline-check
+.PHONY: bootstrap dev-up dev-down api dashboard missionnet missionnet-console mlx test lint scenario health reset-lab offline-check migrate-missionnet
 
 VENV := .venv/bin
 
@@ -44,6 +44,9 @@ health:
 
 reset-lab:
 	bash scripts/reset-lab.sh
+
+migrate-missionnet:
+	$(VENV)/alembic -c infrastructure/migrations/missionnet/alembic.ini upgrade head
 
 offline-check:
 	bash scripts/offline-check.sh

@@ -12,13 +12,11 @@ fi
 
 echo "Resetting MissionNet + Sentinel lab state to seeded baseline..."
 
-if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-  "$REPO_ROOT/.venv/bin/python" -m apps.missionnet.seed --reset || {
-    echo "MissionNet seed script not available yet (expected until Phase 1 lands)." >&2
-  }
-else
+if [ ! -x "$REPO_ROOT/.venv/bin/python" ]; then
   echo "No .venv found; run scripts/bootstrap-mac.sh first." >&2
   exit 1
 fi
+
+"$REPO_ROOT/.venv/bin/python" -m apps.missionnet.seed --reset
 
 echo "reset-lab complete."

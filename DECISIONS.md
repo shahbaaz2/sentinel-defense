@@ -84,6 +84,26 @@ box. Also removed `"credsStore": "desktop"` from `~/.docker/config.json` (backed
 Colima and broke anonymous image pulls. This project never needs private-registry auth, so no
 credential helper is required at all.
 
+## 2026-09-06 — MissionNet DB engine uses NullPool
+
+`create_async_engine`'s default pooled connections stay bound to whichever asyncio event loop first
+checked them out. pytest-asyncio creates a fresh event loop per test by default, so the second
+integration test to touch the shared module-level `engine` singleton crashed with
+`RuntimeError: ... attached to a different loop`. Switched `apps/missionnet/db.py` to `NullPool`
+(fresh connection per checkout) rather than fighting pytest-asyncio's loop scoping. Acceptable at this
+prototype's connection volume; revisit if per-request connection overhead ever shows up in latency
+measurements.
+
+## 2026-09-06 — Lab-control API design (blueprint §7.5)
+
+Every `/lab/*` mutation takes an optional `ScenarioContext` body (`actor_type`, `actor_id`,
+`scenario_id`, `reason`) and writes exactly one `audit_events` row per call, before committing the
+state change in the same transaction. This is deliberate: Phase 3's Demo Control Plane and Phase 7's
+Sentinel response executor are the only two callers, and both need their actions to be
+distinguishable from each other and from ordinary application activity in MissionNet's own audit
+trail. The header-secret check (`X-Lab-Secret`) is a single dependency (`require_lab_secret`) applied
+per-router, not per-route, so a new lab endpoint can't accidentally ship without it.
+
 ## 2026-09-06 — Dependency rule
 
 Business logic (`services/*`, `domain/*`) imports `domain/repositories` **protocols**, never vendor SDKs

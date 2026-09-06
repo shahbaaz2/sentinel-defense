@@ -3,69 +3,75 @@
 Current phase, what is actually verified working (not just present), and the next task. Update this at
 every phase checkpoint — never claim something works without having run the check.
 
-## Current phase: Phase 0 — COMPLETE (all acceptance criteria verified)
+## Current phase: Phase 1 — COMPLETE (all acceptance criteria verified)
 
-### Verified working (commands actually run, not assumed)
-- Mac inspected: arm64, macOS 15.3.1, 16 GB RAM, 8 cores → **Lite profile** (DECISIONS.md).
-- Homebrew tools installed and version-checked: node v26.8.1, pnpm 11.25.0, colima 0.10.3,
-  docker 29.8.0, docker-compose 5.5.1 (standalone binary — `docker compose` v2 plugin is not wired up
-  on this machine; scripts use `docker-compose` instead, documented in RUNBOOK.md), uv 0.12.10,
-  jq 1.8.2, python3.12 via Homebrew.
-- Repo structure created per blueprint §6; `DECISIONS.md` written with the mandatory three-deliverable
-  decomposition before any code.
-- Python venv (`.venv`, Python 3.12) created via `scripts/bootstrap-mac.sh`; all dev dependencies
-  installed (FastAPI, Pydantic v2, SQLAlchemy async, asyncpg, Alembic, pytest, ruff, mypy).
-- `domain/models/events.py`: `NormalizedEvent` Pydantic model per blueprint §8, with field bounds
-  (max lengths on strings/lists) to prevent prompt-injection payload bloat. 13 unit tests pass,
-  covering valid construction, immutability, enum/range rejection, and oversized-field rejection.
-  Run: `.venv/bin/pytest -q` → **13 passed**.
-- `domain/repositories/__init__.py`: `EventRepository` Protocol — the dependency-inversion seam so
-  services never import a vendor SDK directly (blueprint §6.1).
-- `apps/api` (Sentinel FastAPI): `/api/v1/health`, `/api/v1/system/profile`,
-  `/api/v1/system/assurance`. Started on :8080 and hit with curl — all three return correct JSON,
-  including `external_ai_api: disabled` (verified, not assumed).
-- `apps/missionnet` (MissionNet FastAPI shell): `/health` returns
-  `{"status": "nominal", "classification": "SYNTHETIC", ...}`. Started on :8090, curl-verified.
-- `apps/dashboard` (Sentinel dashboard, Next.js 16 + Tailwind): server-rendered page fetches
-  `/api/v1/system/assurance` from the API and renders the Deployment Assurance panel live. Started on
-  :3000, verified both via curl (HTML contains the live values) and a browser screenshot.
-- `apps/missionnet-console` (MissionNet Operations Console shell, Next.js 16 + Tailwind): fetches
-  MissionNet's `/health` and renders it live. Started on :3100, curl + screenshot verified.
-- `pnpm exec tsc --noEmit` clean on both frontend apps. `.venv/bin/ruff check .` clean on the backend.
-- PostgreSQL running in Colima (`infrastructure/compose/docker-compose.yml`, `pgvector/pgvector:pg16`
-  image) with two databases/roles created by `infrastructure/compose/init-db.sql`: `sentinel` and
-  `missionnet`, both with the `vector` extension installed. Verified with
-  `docker exec sentinel-postgres psql ... \dx` and `\l`.
-- `scripts/healthcheck.sh` run end-to-end with everything up: **all checks PASS** except the local
-  model endpoint (correctly WARN/non-critical — Phase 5 hasn't started).
+### Phase 0 recap (see git history for full detail)
+Repo scaffold, Sentinel API shell, MissionNet API shell, Sentinel dashboard shell, PostgreSQL in
+Colima — all verified end-to-end. `make dev-up` / `make health` / `make test` pass.
 
-### Known fix applied during Phase 0 (recorded so it isn't rediscovered)
-- `docker compose` (v2 subcommand) isn't available on this machine even with `docker` and
-  `docker-compose` both installed via Homebrew — the plugin isn't symlinked into
-  `~/.docker/cli-plugins/`. Scripts use the standalone `docker-compose` binary instead. See RUNBOOK.md.
-- `~/.docker/config.json` had `"credsStore": "desktop"` pointing at a Docker-Desktop-only credential
-  helper that doesn't exist under Colima, which broke anonymous image pulls. Removed that key (backed
-  up to `~/.docker/config.json.bak`) since this project doesn't use private registries.
+### Phase 1 — verified working
+- **Data layer**: `apps/missionnet/models.py` — `Asset`, `IdentityUser`, `ServiceToken`,
+  `MissionRecord`, `TelemetrySample`, `AuditEvent`. Migrated via Alembic
+  (`infrastructure/migrations/missionnet`), applied to the real `missionnet` Postgres database —
+  verified with `\dt` showing all 6 tables + `alembic_version`.
+- **Seed/reset**: `apps/missionnet/seed.py` (`python -m apps.missionnet.seed --reset`) creates the
+  deterministic baseline: 10 assets, 8 users, 3 service tokens, 15 mission records, 2 telemetry
+  samples, one `seed.reset` audit event. Counts verified in range per blueprint §7.6
+  (8-15 / 6-10 / 3-5 / 10-30). `scripts/reset-lab.sh` calls this and was run directly — confirmed it
+  restores the exact baseline after a mutation.
+- **Public read API** (`apps/missionnet/routes.py`): `/assets`, `/assets/{id}`, `/identity/users`,
+  `/identity/tokens`, `/mission-data/records`, `/telemetry`, `/audit`, `/state` — all curl-verified.
+- **Lab-control API** (`apps/missionnet/lab.py`), header-secret gated:
+  `/lab/reset`, `/lab/state/{id}/degrade`, `/lab/tokens/{id}/revoke`,
+  `/lab/assets/{id}/quarantine`, `/lab/assets/{id}/restore`, `/lab/evidence/snapshot`,
+  `GET /lab/state`. Verified: missing/wrong secret → 403; unknown asset → 404; a degrade call
+  changes `/health` status to `degraded` **and** appears in `/audit` with correct
+  `actor_type`/`actor_id`/`scenario_id` attribution; quarantine → restore round-trips cleanly;
+  `/lab/reset` clears a mutation back to the nominal baseline.
+- **Computed system state** (`apps/missionnet/state.py`): `nominal -> degraded ->
+  containment_in_progress -> recovering` derived live from asset rows, never hard-coded. Verified via
+  the degrade/quarantine/restore tests above.
+- **Operations Console UI** (`apps/missionnet-console`): renders live Mission System Status badge,
+  per-role service cards (Identity/Gateway/Mission Data/Comms/Operator Console/Telemetry), a full
+  asset table, and the 10 most recent audit events — all server-fetched from the real API, no mock
+  data. Verified two ways: (1) curl showing the live values embedded in the rendered HTML, (2)
+  browser screenshot before and after triggering a real `/lab/state/.../degrade` call, showing the
+  status badge and service dot flip from green/NOMINAL to amber/DEGRADED live.
+- **Tests**: 21 passing (`'.venv/bin/pytest -q'`) — 13 unit (unchanged from Phase 0) + 8 new
+  integration tests in `tests/integration/test_missionnet_lab_api.py` running against the real
+  Postgres `missionnet` database (marked `@pytest.mark.integration`, requires `make dev-up`).
+- `ruff check .` and `mypy apps/missionnet domain` both clean. `tsc --noEmit` clean on both frontend
+  apps. Full `scripts/healthcheck.sh` passes, including a new "MissionNet DB migration applied" check.
 
-### Phase 0 acceptance criteria (blueprint §26) — all met
-- [x] `make dev-up`, `make health`, and `make test` pass.
-- [x] Sentinel shell, MissionNet shell, and API health endpoints are reachable.
-- [x] No paid cloud/API dependency (LLM provider is `mock`, external AI explicitly disabled).
+### Known fix applied during Phase 1 (recorded so it isn't rediscovered)
+- SQLAlchemy's default pooled `create_async_engine` breaks under pytest-asyncio's per-test event
+  loops (`RuntimeError: ... attached to a different loop`) because pooled asyncpg connections stay
+  bound to whichever loop first created them. Fixed by using `NullPool` for the MissionNet engine
+  (`apps/missionnet/db.py`) — a fresh connection per checkout. Fine at this prototype's scale; revisit
+  if connection-churn overhead ever matters.
+
+### Phase 1 acceptance criteria (blueprint §26) — all met
+- [x] MissionNet runs independently from Sentinel (no Sentinel API involved anywhere above).
+- [x] Console shows seeded synthetic assets/services with real backend health state.
+- [x] `make reset-lab` returns MissionNet to the exact seed baseline.
+- [x] At least one state change (asset degrade) is visibly reflected in both the MissionNet UI and
+      its audit stream.
 
 ### Next task
-Begin **Phase 1 — MissionNet as a real synthetic application**: Identity Service, Mission Data API,
-Telemetry Gateway, Asset Registry, deterministic seed dataset, audit events, and the internal
-`/lab/*` control API. Acceptance target: MissionNet runs independently from Sentinel, the console shows
-seeded synthetic assets/services with real backend health state, `make reset-lab` restores the exact
-seed baseline, and at least one state change (e.g. a synthetic token revoke) is visibly reflected in
-both the UI and the audit stream.
+Begin **Phase 2 — Sentinel event/detection/incident foundation**: `NormalizedEvent` ingest from
+MissionNet's `audit_events`/`telemetry_samples` (already curl-verified as a live source), raw-event
+storage with SHA-256 hash, Sentinel's own Postgres schema (events/detections/incidents per blueprint
+§10), the first deterministic correlation rules (§9.3), and the incident state machine (§9.4).
+Acceptance target: a real MissionNet audit event reaches Sentinel through normal ingestion with no AI
+involved, synthetic anomaly fixtures create the expected incident/evidence IDs, and benign activity
+does **not** create a high-severity incident.
 
 ## Phase acceptance status
 
 | Phase | Acceptance criteria met? |
 |---|---|
 | 0 — Repo/bootstrap/contracts | **Yes — verified** |
-| 1 — MissionNet real app | Not started |
+| 1 — MissionNet real app | **Yes — verified** |
 | 2 — Sentinel event/detection/incident | Not started |
 | 3 — Demo Control + SCN-010 causality | Not started |
 | 4 — Sentinel dashboard | Not started |
