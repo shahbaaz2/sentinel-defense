@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AIAnalystPanel } from "./AIAnalystPanel";
 import { IncidentWorkflowPanel } from "./IncidentWorkflowPanel";
 
 const API_BASE = process.env.SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
@@ -15,6 +16,31 @@ type Detection = {
 };
 
 type Note = { note_id: string; author: string; body: string; created_at: string };
+
+type AIAssessment = {
+  assessment_id: string;
+  incident_id: string;
+  created_at: string;
+  model_name: string;
+  model_provider: string;
+  prompt_version: string;
+  validation_status: "VALID" | "REJECTED_SCHEMA" | "REJECTED_HALLUCINATION" | "TIMEOUT" | "PROVIDER_ERROR";
+  assessment: {
+    classification: string;
+    confidence: number;
+    summary: string;
+    affected_assets: string[];
+    evidence_refs: { event_id: string; relevance: string }[];
+    detection_refs: { detection_id: string; relevance: string }[];
+    hypotheses: string[];
+    recommended_investigation_steps: string[];
+    attack_techniques: string[];
+    recommended_playbook_id: string | null;
+    limitations: string[];
+  } | null;
+  latency_ms: number | null;
+  error: string | null;
+};
 
 type IncidentDetail = {
   incident_id: string;
@@ -89,6 +115,12 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
 
   const events = await Promise.all(
     incident.event_ids.map((eventId) => getJSON<NormalizedEvent>(`/api/v1/events/${eventId}`)),
+  );
+  const latestAssessment = await getJSON<AIAssessment>(
+    `/api/v1/incidents/${incident.incident_id}/ai/assessment`,
+  );
+  const assessmentHistory = await getJSON<AIAssessment[]>(
+    `/api/v1/incidents/${incident.incident_id}/ai/assessments`,
   );
 
   return (
@@ -226,12 +258,11 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
         </section>
 
         {/* E. AI ANALYST */}
-        <section className="rounded-lg border border-dashed border-zinc-300 p-4 dark:border-zinc-700">
-          <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-zinc-500">
-            AI Analyst
-          </h2>
-          <p className="text-sm text-zinc-500">NOT ENABLED — scheduled for Phase 5.</p>
-        </section>
+        <AIAnalystPanel
+          incidentId={incident.incident_id}
+          initialAssessment={latestAssessment}
+          initialAssessmentCount={assessmentHistory?.length ?? 0}
+        />
 
         {/* F. ANALYST WORKFLOW */}
         <IncidentWorkflowPanel

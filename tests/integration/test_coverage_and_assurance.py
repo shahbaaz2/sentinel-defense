@@ -1,5 +1,10 @@
 """Phase 4: Detection Coverage (real rules + real validation status from Demo Control's run
 history) and System Assurance (truthful online/offline reporting, no fabricated integrations).
+
+Phase 5 note: `ai_analyst_status`/`local_llm_runtime` are asserted against whatever
+`SENTINEL_AI_ENABLED`/provider status actually is on this machine, not hardcoded to "NOT ENABLED" -
+the point of this test is that assurance never *fabricates* state, not that AI must stay disabled
+forever. See tests/integration/test_ai_analyst_api.py for AI-specific behavior.
 """
 
 import asyncio
@@ -105,9 +110,19 @@ async def test_assurance_reports_truthful_state_no_fake_certifications():
     async with await _sentinel_client() as sentinel:
         assurance = (await sentinel.get("/api/v1/system/assurance")).json()
 
-    assert assurance["external_ai_api"] == "DISABLED"
-    assert assurance["ai_analyst_status"] == "NOT ENABLED"
-    assert assurance["local_llm_runtime"] == "NOT ENABLED"
+    assert assurance["external_ai_api"] == "DISABLED"  # never true regardless of AI Analyst state
+    # Checked for internal consistency, not against this test PROCESS's `settings.ai_enabled` -
+    # the assurance response comes from a separately-running live server process whose own
+    # SENTINEL_AI_ENABLED was fixed at ITS startup, so comparing against a mutable in-process
+    # settings object (which other test files in this suite flip True/False on
+    # apps.api.config.settings) would be order-dependent and flaky. See DECISIONS.md.
+    assert assurance["ai_analyst_status"] in ("OPERATIONAL", "LOADING", "DEGRADED", "NOT ENABLED")
+    if assurance["ai_analyst_status"] == "NOT ENABLED":
+        assert assurance["local_llm_runtime"] == "NOT ENABLED"
+    else:
+        assert assurance["local_llm_runtime"] != "NOT ENABLED"
+    assert assurance["response_authority"] == "NONE"
+    assert assurance["rag_status"] == "NOT ENABLED - Phase 6"
     assert assurance["missionnet_adapter"] == "ONLINE"
     assert assurance["sentinel_api"] == "ONLINE"
     assert assurance["postgresql"] == "ONLINE"

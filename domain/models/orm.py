@@ -222,6 +222,36 @@ class IncidentEventLink(Base):
     )
 
 
+class AIAssessment(Base):
+    """One AI Analyst analysis run against one incident (Phase 5). Append-only like `audit_log` -
+    re-analysis creates a new row rather than overwriting the last one, so the assessment history
+    itself is part of the incident's provenance trail. Written by `services/ai_analyst/service.py`
+    only; the LLM never writes to this table (or any table) directly."""
+
+    __tablename__ = "ai_assessments"
+
+    assessment_id: Mapped[str] = mapped_column(primary_key=True)
+    incident_id: Mapped[str] = mapped_column(ForeignKey("incidents.incident_id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    model_name: Mapped[str]
+    model_provider: Mapped[str]
+    model_revision: Mapped[str | None] = mapped_column(default=None)
+    model_quantization: Mapped[str | None] = mapped_column(default=None)
+    prompt_version: Mapped[str]
+    evidence_pack_hash: Mapped[str]
+    output_schema_version: Mapped[str]
+
+    assessment: Mapped[dict | None] = mapped_column(JSON, default=None)
+    """The validated `AIIncidentAssessment`, dumped to JSON - null when validation_status is not
+    VALID."""
+    validation_status: Mapped[str]
+    """One of: VALID, REJECTED_SCHEMA, REJECTED_HALLUCINATION, TIMEOUT, PROVIDER_ERROR."""
+    latency_ms: Mapped[int | None] = mapped_column(default=None)
+    error: Mapped[str | None] = mapped_column(default=None)
+    scenario_id: Mapped[str | None] = mapped_column(default=None)
+
+
 class IngestionCursor(Base):
     """One row per (source, stream) - e.g. ('missionnet', 'audit') - tracking the polling
     watermark so ingestion is resumable and never reprocesses the same window from scratch."""

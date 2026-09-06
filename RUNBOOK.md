@@ -116,6 +116,74 @@ With MissionNet, Sentinel API, Demo Control, and the Sentinel dashboard all up
 7. **Reset for the next walkthrough.** `make reset-demo` (see below) returns MissionNet, Sentinel,
    and Demo Control's run history to a clean seeded baseline.
 
+## Local AI Analyst (Phase 5)
+
+The AI Analyst is disabled and mocked by default (`SENTINEL_AI_ENABLED=false`,
+`SENTINEL_LLM_PROVIDER=mock` in `.env.example`) so a fresh checkout never tries to download a
+multi-gigabyte model. To run the real local model:
+
+1. **Enable it.** In `.env`:
+   ```bash
+   SENTINEL_AI_ENABLED=true
+   SENTINEL_LLM_PROVIDER=mlx
+   SENTINEL_LLM_MODEL=mlx-community/Qwen3-4B-Instruct-2507-4bit
+   SENTINEL_LLM_MAX_TOKENS=1500
+   SENTINEL_LLM_TIMEOUT_SECONDS=90
+   ```
+   Restart `make api` (there is no separate model server - the model loads in-process on first use;
+   see `docs/model-runtime.md`).
+
+2. **Download/verify the model.** The first analyze call triggers the download automatically
+   (~2.1 GB, one-time, needs internet). To pre-download without waiting on a real incident:
+   ```bash
+   .venv/bin/python -c "from mlx_lm import load; load('mlx-community/Qwen3-4B-Instruct-2507-4bit')"
+   ```
+
+3. **Verify status.**
+   ```bash
+   make ai-status
+   ```
+   Shows `"status": "DISABLED"` if `SENTINEL_AI_ENABLED=false`, `"LOADING"` before the first analyze
+   call in this process, `"READY"` after, `"DEGRADED"` if the model failed to load (check the API
+   process's own log for the reason - it never crashes the process).
+
+4. **Run SCN-010 and analyze the resulting incident.**
+   ```bash
+   curl -s -X POST -H "Content-Type: application/json" -d '{}' \
+     http://127.0.0.1:8100/api/v1/scenarios/SCN-010/run
+   # poll .../runs/RUN-<id> until PASSED, then take one of its incident_ids
+   curl -X POST http://127.0.0.1:8080/api/v1/incidents/<incident_id>/ai/analyze
+   ```
+   Or click **ANALYZE WITH LOCAL AI** on that incident's detail page in the dashboard - the button
+   is disabled/hidden as "NOT ENABLED" whenever `SENTINEL_AI_ENABLED=false`.
+
+5. **Inspect an assessment.**
+   ```bash
+   curl -s http://127.0.0.1:8080/api/v1/incidents/<incident_id>/ai/assessment | python3 -m json.tool
+   curl -s http://127.0.0.1:8080/api/v1/incidents/<incident_id>/ai/assessments | python3 -m json.tool  # full history
+   ```
+
+6. **Simulate AI failure without touching the model.** Set `SENTINEL_LLM_TIMEOUT_SECONDS=0.01` (or
+   stop the machine's network before the model is cached) and re-analyze - the incident is
+   untouched and a `PROVIDER_ERROR`/`TIMEOUT` row is persisted instead of a crash. Restore the real
+   timeout afterward.
+
+7. **Disable it again.** Set `SENTINEL_AI_ENABLED=false` (or `SENTINEL_LLM_PROVIDER=mock`) and
+   restart `make api` - every Phase 0-4 feature, and SCN-010 itself, works identically with the AI
+   Analyst off.
+
+8. **Troubleshoot memory/load issues.** See `docs/model-runtime.md` for measured RAM/latency
+   numbers on this machine. If the model won't load: confirm `SENTINEL_LLM_MODEL` is the 4-bit MLX
+   community build (not a full-precision or non-MLX repo), confirm `mlx`/`mlx-lm` are installed in
+   `.venv` (`requirements-dev.txt`), and check `/tmp` disk space for the Hugging Face cache
+   (`~/.cache/huggingface/hub/`, ~2.1 GB).
+
+Evaluation harness (14 hand-built cases, schema/hallucination/latency metrics):
+```bash
+.venv/bin/python -m evaluation.llm.run_eval --provider mlx      # real model
+.venv/bin/python -m evaluation.llm.run_eval --provider mock     # fast plumbing smoke test
+```
+
 ## Stop
 
 ```bash
@@ -140,8 +208,9 @@ make health
 ```
 
 Runs `scripts/healthcheck.sh`, which checks PostgreSQL connectivity, API `/health`, dashboard HTTP
-response, MissionNet health, the local model endpoint (once Phase 5 is enabled), migration version, and
-that a knowledge/policy bundle is present. Exits non-zero on any critical failure.
+response, MissionNet health, the AI Analyst status endpoint (non-critical - reports `DISABLED`
+truthfully when `SENTINEL_AI_ENABLED=false`, which is still a PASS), migration version, and that a
+knowledge/policy bundle is present. Exits non-zero on any critical failure.
 
 ## Offline check
 

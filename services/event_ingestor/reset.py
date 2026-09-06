@@ -9,6 +9,7 @@ from sqlalchemy import delete
 
 from domain.db import SessionLocal
 from domain.models.orm import (
+    AIAssessment,
     AuditLogEntry,
     Detection,
     DetectionEventLink,
@@ -23,6 +24,7 @@ from domain.models.orm import (
 )
 
 _DELETE_ORDER = (
+    AIAssessment,
     IncidentNote,
     IncidentEventLink,
     IncidentDetectionLink,

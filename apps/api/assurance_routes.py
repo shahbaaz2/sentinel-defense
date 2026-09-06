@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ai.providers.base import LLMProvider, ProviderStatus
+from apps.api.ai_routes import get_llm_provider
 from apps.api.config import settings
 from apps.api.schemas import IntegrationStatusOut, SystemAssuranceOut
 from domain.db import get_session
@@ -28,7 +30,10 @@ async def _reachable(url: str) -> bool:
 
 
 @router.get("/system/assurance", response_model=SystemAssuranceOut)
-async def system_assurance(session: AsyncSession = Depends(get_session)):
+async def system_assurance(
+    session: AsyncSession = Depends(get_session),
+    provider: LLMProvider = Depends(get_llm_provider),
+):
     missionnet_ok = await _reachable(f"{MISSIONNET_BASE_URL}/health")
     demo_control_ok = await _reachable(f"{DEMO_CONTROL_BASE_URL}/health")
 
@@ -39,12 +44,28 @@ async def system_assurance(session: AsyncSession = Depends(get_session)):
     except Exception:  # noqa: BLE001 - any DB error means "not OK" for this status check
         postgres_ok = False
 
+    # Phase 5: distinguish "AI Analyst disabled by config" from "enabled but the provider is
+    # actually degraded" - deterministic detection/correlation stay OPERATIONAL either way (see
+    # DECISIONS.md: AI failure must never affect Sentinel's core functions).
+    if not settings.ai_enabled:
+        ai_status = "NOT ENABLED"
+        local_llm_runtime = "NOT ENABLED"
+    else:
+        provider_status = await provider.get_status()
+        ai_status = {
+            ProviderStatus.READY: "OPERATIONAL",
+            ProviderStatus.LOADING: "LOADING",
+            ProviderStatus.DEGRADED: "DEGRADED",
+            ProviderStatus.DISABLED: "NOT ENABLED",
+        }[provider_status]
+        local_llm_runtime = provider.get_provenance().runtime
+
     return SystemAssuranceOut(
         deployment_profile=settings.profile.upper(),
         platform="Apple Silicon (arm64)",
         inference_location="local",
         external_ai_api="DISABLED" if not settings.external_ai_enabled else "ENABLED",
-        ai_analyst_status="NOT ENABLED",
+        ai_analyst_status=ai_status,
         internet_required_for_core_demo="NO - runtime demo requires no external network access",
         model=settings.llm_model,
         model_provider=settings.llm_provider,
@@ -55,6 +76,6 @@ async def system_assurance(session: AsyncSession = Depends(get_session)):
         sentinel_api="ONLINE",
         postgresql="ONLINE" if postgres_ok else "OFFLINE",
         demo_control="ONLINE" if demo_control_ok else "OFFLINE",
-        local_llm_runtime="NOT ENABLED",
+        local_llm_runtime=local_llm_runtime,
         integrations=IntegrationStatusOut(),
     )

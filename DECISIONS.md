@@ -4,6 +4,179 @@ ADR-style log of durable engineering decisions. Newest first. Each entry: date, 
 
 ---
 
+## 2026-09-06 — Phase 5: MLX loads in-process, not as a separate `mlx_lm.server` sidecar
+
+`ai/providers/mlx_provider.py::MLXProvider` calls `mlx_lm.load()`/`mlx_lm.generate()` directly
+inside the Sentinel API worker process, lazily on the first `POST .../ai/analyze` call, rather than
+running `mlx_lm.server` as a second process and talking to it over `SENTINEL_LLM_BASE_URL` (the
+config field the Phase 0 scaffold already had, suggesting that was the original plan). In-process
+won because: (1) it's one fewer moving part to start/monitor/restart on a 16GB Lite-profile laptop;
+(2) `ai/providers/get_provider()` being a process-wide singleton is what actually guarantees "never
+load the model twice" - a separate server process doesn't need that guarantee enforced in Python,
+but then nothing stops someone from accidentally starting two server instances; (3) the
+`LLMProvider` Protocol boundary (`ai/providers/base.py`) already isolates all MLX-specific code to
+one file - `apps/api/`, `apps/dashboard/`, and `services/ai_analyst/` never import `mlx`/`mlx_lm`
+directly, so the "Sentinel's API/dashboard must not depend directly on MLX-specific code"
+requirement is satisfied without needing a network boundary too. The tradeoff: the model's ~3GB
+footprint now lives inside the same process as the rest of the API, so an MLX crash could in theory
+take the API down with it - mitigated by `_ensure_loaded()` catching every load exception and
+setting `DEGRADED` status rather than propagating, and `structured_completion` never being called
+from anywhere except `services/ai_analyst/service.py`'s already-isolated `run_analysis`. Revisit if
+a later phase wants to run inference on a separate machine/GPU.
+
+`scripts/healthcheck.sh`'s old "Local model endpoint" check (`curl .../v1/models`, written for the
+sidecar-server design) was replaced with a check against Sentinel's own `/api/v1/ai/status` -
+non-critical, passes whether AI is enabled or not, since a fresh checkout with
+`SENTINEL_AI_ENABLED=false` is exactly as healthy as one with it on.
+
+## 2026-09-06 — Provider abstraction: `LLMProvider` Protocol + `mock`/`mlx`, closed allowlist
+
+`ai/providers/base.py::LLMProvider` is a `typing.Protocol` with exactly one capability
+(`structured_completion`) plus two read-only status methods (`get_status`, `get_provenance`) - no
+method that could plausibly write anything, by construction. `ai/providers/__init__.py::
+build_provider` is a closed `if/elif/raise` over provider names, not a registry/plugin system - adding
+a cloud provider means adding a new module and a new `elif` branch that a reviewer will see, not
+silently working because someone typed a new string into `.env`. `SENTINEL_LLM_PROVIDER=mock` (the
+`.env.example` default) is a deterministic in-process stand-in used by every fast test; `mlx` is the
+only real inference path. `get_provider()` caches one singleton per `(provider_name, model_name)` -
+the whole point being that the 16GB Lite profile must never have two real models resident at once.
+
+## 2026-09-06 — Evidence Pack: curated fields only, hashed, no playbook catalog yet
+
+`services/ai_analyst/evidence.py::build_evidence_pack` reads exactly: the incident's own columns,
+its linked detections (with their own linked event IDs), its linked normalized events, the primary
+asset's context if any, and the union of MITRE technique IDs already attached by deterministic
+code. No raw SQL, no unbounded query, no other table. `available_playbook_ids` is hardcoded to `[]`
+in Phase 5 - no playbook catalog exists yet (`playbooks/` is still an empty scaffold directory from
+Phase 0), so there is nothing real to populate it with; inventing a fake allowlist just to exercise
+the field would violate the same "no fabricated content" rule this whole project runs on. The pack
+is sha256-hashed (`evidence_pack_hash`, recorded on every `AIAssessment` row) so two assessments of
+the same incident can be checked for whether the underlying evidence actually changed between them
+without diffing the full JSON.
+
+## 2026-09-06 — Structured output: schema validation and hallucination validation are two separate,
+both-mandatory gates
+
+`ai/schemas.py::AIIncidentAssessment` (`extra="forbid"`, `confidence` bounded via `Field(ge=0.0,
+le=1.0)`) only proves the model's output has the right *shape*. `services/ai_analyst/validation.py
+::validate_assessment` separately proves it has the right *content* - every `event_id`/
+`detection_id`/entry in `affected_assets`/`recommended_playbook_id` must exist in the literal
+evidence pack that was sent. A single invented ID anywhere rejects the *entire* assessment
+(`validation_status = REJECTED_HALLUCINATION`, `assessment = null` in the persisted row) - there is
+deliberately no partial-credit mode that shows the valid-looking fields and hides only the bad one,
+because a human analyst skimming a mostly-real assessment with one fabricated citation buried in it
+is exactly the failure mode this project's "no fabricated detections/incidents/events" rule exists
+to prevent, extended to AI output.
+
+**A real instance of this firing, found via the live SCN-010 browser verification (not a
+hypothetical)**: the first real-model analysis of a genuine, live incident returned
+`affected_assets: ["u-operator-01"]` - a real, correctly-spelled user ID, but a *username*, not an
+*asset* ID, and this identity-only incident has no `primary_asset_id` at all (`affected_assets`'
+valid set was therefore empty). Validation correctly rejected it as `REJECTED_HALLUCINATION`. This
+was not "the model hallucinating a fake ID" in the adversarial sense - it was reasonable behavior
+given an ambiguous field name and no better place to put the user identity - so the fix was to
+clarify `ai/prompts/incident_analysis_v1.txt`'s field semantics ("affected_assets is for ASSET IDs
+only... leave it empty for identity-only incidents"), not to loosen `validate_assessment`. Re-running
+the same incident after the prompt fix produced `affected_assets: []` and a clean `VALID` result.
+Re-running the full 14-case evaluation harness (`evaluation/llm/cases.py`) before/after this fix
+moved `hallucination_free_rate` from `0.857` (12/14 - the same failure mode hit two other
+identity/token-only cases) to `1.0` (14/14), with `schema_valid_rate` and `keyword_match_rate`
+unaffected - see PROGRESS.md for the full before/after numbers.
+
+## 2026-09-06 — `SENTINEL_LLM_MAX_TOKENS` raised from an initial 700 to 1500
+
+The first live SCN-010 analysis attempt returned `PROVIDER_ERROR` with "Unterminated string" - the
+model's own JSON output was cut off mid-field by the 700-token cap on a 3-event incident with
+several list fields (`hypotheses`, `recommended_investigation_steps`, `evidence_refs` each with a
+`relevance` string). A direct measurement (`mlx_lm.generate` against a single-event evidence pack)
+showed ~450 tokens for a *minimal* response; a 3-event incident with more to say needs
+comfortably more. 1500 gives real responses (observed 400-900 tokens in practice) generous headroom
+without materially increasing worst-case latency, since generation stops at the model's own
+end-of-message token, not at the cap, for any response that actually finishes.
+
+## 2026-09-06 — AI Analyst has no write path to any table except `ai_assessments`/`audit_log` - by
+construction, not by policy
+
+`services/ai_analyst/service.py::run_analysis` is the only function that persists AI output, and it
+touches exactly two tables. No module under `ai/` or `services/ai_analyst/` imports
+`domain.models.orm.Incident`/`Detection`/`SentinelAsset` for writing, imports `apps.missionnet`, or
+calls any adapter. This means the "AI cannot create/modify a detection or incident, cannot change
+severity/status/disposition, cannot touch MissionNet/firewall/credential/container/OS state" set of
+constraints from the Phase 5 spec hold structurally, not because the system prompt asks nicely - see
+`docs/ai-security-boundaries.md` and the adversarial tests in `tests/adversarial/`, which prove this
+even when the model's output is constructed to look maximally compliant with an injected
+instruction. This is also why `run_analysis` never raises: a provider failure only ever produces a
+differently-labeled row in `ai_assessments`, never an unhandled exception that could take down the
+request path shared with deterministic Sentinel endpoints.
+
+## 2026-09-06 — Bugfix: `services/event_ingestor/reset.py` missing `AIAssessment` (third occurrence)
+
+Same bug class as the Phase 4 `IncidentNote`/`AuditLogEntry` omission: a new table
+(`ai_assessments`, FK to `incidents.incident_id`) was added without updating `_DELETE_ORDER` in the
+shared reset script, which would have caused a foreign-key violation the next time `make
+sentinel-reset` ran against a database with any AI assessment rows. Caught and fixed before it ever
+shipped, but this is now the *third* time a new Phase's table has hit this exact bug - worth a
+standing habit: grep `_DELETE_ORDER` whenever a migration adds a table with a FK into
+`incidents`/`detections`/`normalized_events`, rather than relying on remembering to update it.
+
+## 2026-09-06 — Pre-existing gap noted, not fixed: `scripts/offline-check.sh` does not exist
+
+`Makefile`'s `offline-check` target and `RUNBOOK.md`'s "Offline check" section both reference
+`scripts/offline-check.sh`, but the file isn't in the repository - discovered while documenting
+Phase 5's own offline behavior (verified manually instead: `HF_HUB_OFFLINE=1` model load succeeds
+against the already-cached model). This predates Phase 5 and isn't caused by anything in this
+phase; writing a full offline-check script is out of scope for an AI Analyst phase and is flagged
+here rather than silently worked around, so a future phase (or this one, if asked) can pick it up
+deliberately.
+
+## 2026-09-06 — Bugfix: don't assert a live server's response against this test process's mutable
+`settings` object
+
+`test_assurance_reports_truthful_state_no_fake_certifications` initially asserted
+`assurance["ai_analyst_status"]` against `apps.api.config.settings.ai_enabled` read in the *test
+process*. That looked reasonable in isolation but is wrong: `/api/v1/system/assurance` is served by
+a separately-running live uvicorn process whose `settings` were fixed at *its own* startup, while
+`tests/integration/test_ai_analyst_api.py` and `tests/adversarial/test_prompt_injection*.py`
+mutate the *test process's* `settings.ai_enabled` (True in setup, False in teardown) via FastAPI
+dependency overrides against an in-process ASGI app. Because `pytest -q` runs every test file in
+one process, whichever value those other files' teardown last left `settings.ai_enabled` at leaked
+into this unrelated test - passing or failing depending entirely on file collection order, not on
+anything actually wrong. Fixed by asserting internal consistency of the live response instead
+(`ai_analyst_status == "NOT ENABLED"` iff `local_llm_runtime == "NOT ENABLED"`) rather than
+comparing two independent processes' state through a shared mutable global. General lesson: a
+process-wide singleton (`settings`) mutated by one integration test file's fixtures is never safe
+to also read as an oracle from a different test file, even if it happens to hold "the right" value
+during isolated runs of either file.
+
+## 2026-09-06 — Bugfix: `uvicorn --reload` watching the whole repo caused a real hang during
+development, not shipped in any test
+
+While iterating on this phase, `--reload`'s default watch scope (the entire repository, not just
+`apps/`) meant every edit to a test file or a `.md` doc triggered a full worker restart on the
+already-running dev API - including, once, a restart that raced a live pytest run's TCP connection
+and got stuck at "Waiting for connections to close" indefinitely, making the entire API
+unresponsive (even `GET /health`) until the process was force-killed. This wasted real debugging
+time (the initial symptom looked exactly like a hung MLX inference call, not a reload bug) before
+`tail /tmp/sentinel_api.log` showed the actual `WatchFiles detected changes... Reloading...
+Shutting down` sequence. Not a code change - just a documented operational gotcha: prefer running
+the dev API *without* `--reload` while actively editing files outside `apps/`/`domain/`/`services/`
+during a test session, and restart it manually (`make api` already uses `--reload` for normal
+day-to-day backend iteration, which is fine when edits are confined to Python source under active
+watch, just not while a pytest run is also hitting the same port).
+
+## 2026-09-06 — Existing Phase 4 assurance test updated for a truthful, not hardcoded, AI state
+
+`tests/integration/test_coverage_and_assurance.py::
+test_assurance_reports_truthful_state_no_fake_certifications` originally hardcoded `ai_analyst_status
+== "NOT ENABLED"`, which was correct *only* because Phase 5 didn't exist yet. Now that
+`SENTINEL_AI_ENABLED=true` is this machine's real, intended end-state (System Assurance correctly
+reports `OPERATIONAL`), the test was updated to assert *truthfulness relative to config* rather than
+a specific hardcoded value - if `settings.ai_enabled` is true it must report one of
+`OPERATIONAL`/`LOADING`/`DEGRADED` (never a fabricated `NOT ENABLED`), and if false it must report
+exactly `NOT ENABLED`. The test's actual point - no fabricated certification language, real
+integration statuses - was preserved and strengthened (added assertions for the new
+`response_authority`/`rag_status` fields), not weakened.
+
 ## 2026-09-06 — Phase 4: SSE, not polling, for the main SOC dashboard
 
 `apps/api/stream_routes.py` exposes `GET /api/v1/stream`, an async generator yielding a full

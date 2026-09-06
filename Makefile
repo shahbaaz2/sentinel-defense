@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev-up dev-down api dashboard missionnet missionnet-console mlx test lint health reset-lab offline-check migrate-missionnet migrate-sentinel migrate-democontrol ingest-once ingest-watch sentinel-reset demo-control demo-control-console reset-demo
+.PHONY: bootstrap dev-up dev-down api dashboard missionnet missionnet-console mlx ai-status test lint health reset-lab offline-check migrate-missionnet migrate-sentinel migrate-democontrol ingest-once ingest-watch sentinel-reset demo-control demo-control-console reset-demo
 
 VENV := .venv/bin
 
@@ -30,8 +30,14 @@ demo-control-console:
 	cd apps/demo-control-console && pnpm dev
 
 mlx:
-	@echo "uv tool install mlx-lm"
-	@echo "mlx_lm.server --model mlx-community/Qwen3-4B-Instruct-2507-4bit"
+	@echo "Phase 5: the local model loads in-process inside 'make api', lazily, on first"
+	@echo "  POST /api/v1/incidents/{id}/ai/analyze - no separate server process to start."
+	@echo "  Set SENTINEL_AI_ENABLED=true and SENTINEL_LLM_PROVIDER=mlx in .env, then:"
+	@echo "  $(VENV)/python -c \"from mlx_lm import load; load('mlx-community/Qwen3-4B-Instruct-2507-4bit')\""
+	@echo "  downloads/caches the model once. See RUNBOOK.md 'Local AI Analyst'."
+
+ai-status:
+	curl -s http://127.0.0.1:8080/api/v1/ai/status | python3 -m json.tool
 
 test:
 	$(VENV)/pytest -q

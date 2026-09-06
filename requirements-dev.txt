@@ -12,3 +12,7 @@ pytest>=8.3
 pytest-asyncio>=0.24
 ruff>=0.7
 mypy>=1.13
+
+# Phase 5: local AI Analyst runtime (Apple Silicon only). Never a cloud LLM SDK.
+mlx>=0.18
+mlx-lm>=0.19

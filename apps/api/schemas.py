@@ -138,6 +138,62 @@ class IncidentDispositionUpdate(BaseModel):
     actor: str = Field(default="analyst", max_length=128)
 
 
+class AIEvidenceReferenceOut(BaseModel):
+    event_id: str
+    relevance: str
+
+
+class AIDetectionReferenceOut(BaseModel):
+    detection_id: str
+    relevance: str
+
+
+class AIAssessmentContentOut(BaseModel):
+    classification: str
+    confidence: float
+    summary: str
+    affected_assets: list[str]
+    evidence_refs: list[AIEvidenceReferenceOut]
+    detection_refs: list[AIDetectionReferenceOut]
+    hypotheses: list[str]
+    recommended_investigation_steps: list[str]
+    attack_techniques: list[str]
+    recommended_playbook_id: str | None
+    limitations: list[str]
+
+
+class AIAssessmentOut(BaseModel):
+    assessment_id: str
+    incident_id: str
+    created_at: datetime
+    model_name: str
+    model_provider: str
+    model_revision: str | None
+    model_quantization: str | None
+    prompt_version: str
+    evidence_pack_hash: str
+    output_schema_version: str
+    assessment: AIAssessmentContentOut | None
+    validation_status: Literal[
+        "VALID", "REJECTED_SCHEMA", "REJECTED_HALLUCINATION", "TIMEOUT", "PROVIDER_ERROR"
+    ]
+    latency_ms: int | None
+    error: str | None
+    scenario_id: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class AIStatusOut(BaseModel):
+    ai_enabled: bool
+    runtime: str
+    provider: str
+    model: str
+    status: Literal["READY", "LOADING", "DEGRADED", "DISABLED"]
+    external_ai_api: str = "DISABLED"
+    last_latency_ms: int | None = None
+
+
 class MetricsSummaryOut(BaseModel):
     protected_assets: int
     normalized_events: int
@@ -206,4 +262,6 @@ class SystemAssuranceOut(BaseModel):
     postgresql: str
     demo_control: str
     local_llm_runtime: str
+    rag_status: str = "NOT ENABLED - Phase 6"
+    response_authority: str = "NONE"
     integrations: IntegrationStatusOut

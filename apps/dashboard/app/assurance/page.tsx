@@ -19,6 +19,8 @@ type Assurance = {
   postgresql: string;
   demo_control: string;
   local_llm_runtime: string;
+  rag_status: string;
+  response_authority: string;
   integrations: Record<string, string>;
 };
 
@@ -33,8 +35,8 @@ async function getAssurance(): Promise<Assurance | null> {
 }
 
 function Row({ label, value }: { label: string; value: string }) {
-  const ok = ["ONLINE", "ACTIVE", "DISABLED"].includes(value);
-  const warn = value === "OFFLINE";
+  const ok = ["ONLINE", "ACTIVE", "DISABLED", "OPERATIONAL", "READY", "NONE"].includes(value);
+  const warn = value === "OFFLINE" || value === "DEGRADED";
   return (
     <div className="flex items-center justify-between border-t border-zinc-200 py-2 text-sm first:border-t-0 dark:border-zinc-800">
       <span className="text-zinc-600 dark:text-zinc-400">{label}</span>
@@ -84,6 +86,8 @@ export default async function AssurancePage() {
               <Row label="External AI API" value={assurance.external_ai_api} />
               <Row label="AI Analyst" value={assurance.ai_analyst_status} />
               <Row label="Local LLM Runtime" value={assurance.local_llm_runtime} />
+              <Row label="RAG" value={assurance.rag_status} />
+              <Row label="Response Authority" value={assurance.response_authority} />
               <Row
                 label="Internet Required for Core Demo"
                 value={assurance.internet_required_for_core_demo}

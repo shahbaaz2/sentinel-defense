@@ -9,6 +9,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "integration: requires a running Postgres (docker-compose up), see RUNBOOK.md",
+    "ai_live: requires a real local MLX model load + inference (Apple Silicon only, slow) - see RUNBOOK.md 'Local AI Analyst'",
 ]
 
 [tool.ruff]
