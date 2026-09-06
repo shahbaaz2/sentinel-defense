@@ -52,10 +52,13 @@ make test        # run Python + TypeScript tests
 Then open:
 - Sentinel dashboard: http://127.0.0.1:3000
 - MissionNet Operations Console: http://127.0.0.1:3100
+- Demo Control (scenario orchestration): http://127.0.0.1:3200 (`make demo-control`, `make demo-control-console`)
 - Sentinel API docs: http://127.0.0.1:8080/docs
 
-To see Sentinel actually detect something, run `make ingest-once` after causing a real MissionNet
-signal — see [RUNBOOK.md](RUNBOOK.md#create-a-phase-2-test-event-and-verify-detectionincident).
+For the full live demo (drive MissionNet, watch Sentinel detect it independently, verify PASS), see
+[docs/demo-runbook.md](docs/demo-runbook.md) — or manually: run `make ingest-once` after causing a
+real MissionNet signal, see
+[RUNBOOK.md](RUNBOOK.md#create-a-phase-2-test-event-and-verify-detectionincident).
 
 ## Feature matrix (updated as phases land)
 
@@ -64,7 +67,7 @@ signal — see [RUNBOOK.md](RUNBOOK.md#create-a-phase-2-test-event-and-verify-de
 | Repo scaffold, health endpoint, shells | **Phase 0 — done and verified** |
 | MissionNet real synthetic app | **Phase 1 — done and verified** |
 | Normalized events, deterministic detection, incidents | **Phase 2 — done and verified** |
-| Demo Control / SCN-010 scenario | Phase 3 — not started |
+| Demo Control / SCN-010 scenario | **Phase 3 — done and verified** |
 | Sentinel dashboard (posture/incidents/investigation) | Overview + Incidents + Incident Detail done in Phase 2; polish/SSE pending |
 | Local MLX AI analyst + RAG | Phase 5 — not started |
 | Playbooks, policy engine, approvals | Phase 6 — not started |
@@ -84,4 +87,6 @@ See [PROGRESS.md](PROGRESS.md) for exactly what currently works and what was act
 - [docs/data-contracts.md](docs/data-contracts.md) — current schema definitions (MissionNet + Sentinel).
 - [docs/detection-engine.md](docs/detection-engine.md) — how the 6 deterministic lab rules work.
 - [docs/incident-correlation.md](docs/incident-correlation.md) — how detections become incidents.
-- `docs/playbooks.md`, `docs/demo.md` — added as those phases land.
+- [docs/scenario-controller.md](docs/scenario-controller.md) — Demo Control architecture and scenario format.
+- [docs/demo-runbook.md](docs/demo-runbook.md) — live demo walkthrough, including SCN-010.
+- `docs/playbooks.md` — added when Phase 6 lands.

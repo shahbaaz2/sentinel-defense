@@ -94,6 +94,32 @@ MissionNet audit `action` and the telemetry stream map to one explicit, tested
 `(event_category, event_type, severity)`. See `docs/detection-engine.md` for the rules that consume
 these events, and `docs/incident-correlation.md` for how detections become incidents.
 
+## Demo Control (`apps/demo_control/models.py`, Phase 3)
+
+Own Postgres database (`democontrol`), migrated via `infrastructure/migrations/demo_control`.
+
+| Table | Purpose | Key fields |
+|---|---|---|
+| `scenario_runs` | One row per scenario execution | `run_id`, `scenario_id`, `status` (state machine - see `docs/scenario-controller.md`), `step_results`/`timeline` (JSON), `missionnet_event_ids`/`sentinel_event_ids`/`detection_ids`/`incident_ids` (JSON lists of real observed IDs), `verification` (JSON, check name -> bool) |
+
+A single table with JSON columns is a deliberate simplification for this operational-metadata store
+(see DECISIONS.md) - it does not need Sentinel's relational evidence-link treatment because nothing
+else joins against it.
+
+### Demo Control API (`apps/demo_control/routes.py`)
+
+`GET /api/v1/status` (MissionNet/Sentinel/AI-analyst status for the console header),
+`GET /api/v1/scenarios[/{id}]`, `POST /api/v1/scenarios/{id}/run`, `GET /api/v1/runs[/{id}]`,
+`GET /api/v1/runs/{id}/timeline`, `GET /api/v1/runs/{id}/verification`,
+`POST /api/v1/runs/{id}/cancel`, `POST /api/v1/runs/{id}/reset`.
+
+### Sentinel additions for Demo Control (`apps/api/admin_routes.py`, Phase 3)
+
+`POST /api/v1/ingest/run` (runs one full Phase 2 ingestion cycle, returns the same summary
+`make ingest-once` prints) and `POST /api/v1/admin/reset` (clears Sentinel's ingested/derived
+state) - see DECISIONS.md for why these are the only two Sentinel endpoints Demo Control calls with
+a verb other than GET.
+
 ## Sentinel API (`apps/api/main.py`, `apps/api/routes.py`)
 
 `GET /api/v1/health`, `/api/v1/system/profile`, `/api/v1/system/assurance` (Deployment Assurance

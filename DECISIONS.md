@@ -4,6 +4,135 @@ ADR-style log of durable engineering decisions. Newest first. Each entry: date, 
 
 ---
 
+## 2026-09-06 — Demo Control structure: `apps/demo_control` + `apps/demo-control-console`
+
+Mirrors the existing `apps/api`+`apps/dashboard` (Sentinel) and `apps/missionnet`+`apps/missionnet-
+console` (MissionNet) pattern exactly: one FastAPI backend, one Next.js frontend, each independently
+runnable. The Python package directory is `demo_control` (underscore - Python doesn't allow hyphens
+in importable package names) while its own database, ports, and the frontend directory use the
+hyphenated `demo-control`/`demo-control-console` naming to match the blueprint's `apps/demo-control`
+suggestion as closely as syntax allows. This is a fourth full app, not a subdirectory of Sentinel or
+MissionNet, because §17 of the blueprint and the Phase 3 prompt are explicit that Demo Control is a
+third, independent product - visually and architecturally distinct from both.
+
+## 2026-09-06 — Proof the Scenario Controller cannot create Sentinel incidents/detections directly
+
+This is the load-bearing safety property of Phase 3, so it is stated plainly: `apps/demo_control`
+has no import of, or dependency on, `domain.models.orm`, `services.detection_engine`, or
+`services.incident_engine`. Its only way to affect Sentinel's state is `POST /api/v1/ingest/run`
+(`apps/api/admin_routes.py`), which runs Sentinel's real, unmodified Phase 2 pipeline - the same
+adapter, mapper, detection rules, and correlation engine already tested in Phase 2 - and every other
+Sentinel call the controller makes is a `GET`. `apps/demo_control/verification.py` derives every
+PASS/FAIL check from those real GET responses; there is no function anywhere in `apps/demo_control`
+that constructs a `Detection` or `Incident` object. `tests/integration/test_demo_control_e2e.py`
+independently cross-checks a run's captured incident ID against Sentinel's own API
+(`test_scn003_passes_with_real_ids_at_every_layer`) rather than trusting the controller's own record.
+
+## 2026-09-06 — Scenario definition format and the DET-numbering correction
+
+YAML, one file per scenario in `cyber-range/scenarios/SCN-*.yaml`, parsed by
+`apps/demo_control/scenarios.py` into a Pydantic `ScenarioDefinition` - schema-validated at load
+time, not just structurally-typed at runtime. Steps support both `repeat` (same target N times,
+e.g. SCN-001's auth-failure burst) and `targets` (a list, one call per item, e.g. SCN-004's spread
+across five different mission records) because DET-001 and DET-003 need different traffic shapes to
+trigger genuinely, not because the format needed both for its own sake.
+
+The Phase 3 prompt's suggested rule IDs per scenario (DET-002 for "Service Credential Anomaly",
+DET-003 for "Mission-Critical Asset Degradation", DET-004 for "Sensitive Record Access") come from
+the *original* blueprint's suggested list, not the catalog Phase 2 actually shipped. Every scenario
+here targets the rule that matches its *described behavior* in the real catalog instead - see the
+"Phase 3 scenario-to-rule mapping" entry below for the full SCN-to-DET mapping. This is called out
+in each scenario's own `description` field too, so a reader hitting a scenario file directly isn't
+confused.
+
+## 2026-09-06 — Execution state machine and why polling, not SSE
+
+`apps/demo_control/runner.py` implements PENDING → PREPARING → RUNNING → WAITING_FOR_TELEMETRY →
+WAITING_FOR_SENTINEL → VERIFYING → PASSED/FAILED, with CANCELLED reachable at any point via a
+`cancel_requested` flag checked between steps and poll iterations. Each transition is persisted
+immediately (`_update_run`/`_append_timeline`), so `GET /api/v1/runs/{id}` always reflects genuine
+progress - the UI's timeline entries are exactly what `_append_timeline` wrote, in the order it wrote
+them, never animated client-side.
+
+The frontend polls `GET /api/v1/runs/{id}` every 1.5s (`RunView.tsx`) rather than using
+Server-Sent Events. A real scenario run completes in 2-5 seconds end to end (measured: SCN-003 ~2s,
+SCN-010 ~3s), so SSE's main advantage - avoiding poll latency on long-lived connections - doesn't
+apply here, and polling is trivially simpler to reason about, test, and keep working across a
+background-tab-throttled browser. Revisit only if a future scenario's real duration grows enough
+that 1.5s of staleness becomes noticeable.
+
+## 2026-09-06 — Verification is baseline-diffed, not reset-dependent
+
+`apps/demo_control/verification.py` captures the set of existing detection/incident IDs *before* a
+scenario's steps run (`capture_baseline`) and only counts IDs absent from that baseline as caused by
+this run. Every shipped scenario also resets the lab first (`reset.strategy: lab_reset`) for
+demo determinism, but verification does not rely on that: a scenario with `reset.strategy: none`
+still gets correct baseline-diffed results (exercised directly by
+`tests/integration/test_demo_control_e2e.py::test_precondition_failure_reported_as_failed_not_passed`,
+which needs the pre-reset state preserved to test the failure path at all). MissionNet-side
+observation (`_poll_missionnet_events` in runner.py) uses the same principle via `since=<run start
+time>` rather than a baseline snapshot, since MissionNet's audit/telemetry endpoints already support
+time-based filtering.
+
+## 2026-09-06 — `POST /api/v1/ingest/run` and `/api/v1/admin/reset`: the only two Sentinel writes
+
+Phase 2's ingestion pipeline only had a CLI entrypoint (`make ingest-once`). Demo Control runs as a
+separate process and needed a way to trigger it without importing Sentinel's internals or shelling
+out to a subprocess. Refactored the CLI's logic into `services/event_ingestor/pipeline.py`
+(`run_ingestion_cycle`) and exposed it as `POST /api/v1/ingest/run` on Sentinel's own API
+(`apps/api/admin_routes.py`) - both `make ingest-once` and the new endpoint now call the identical
+function, so there is exactly one ingestion code path, not two that could drift. `POST
+/api/v1/admin/reset` similarly wraps the existing `services/event_ingestor/reset.reset()` (`make
+sentinel-reset`). Both are POSTs but neither writes an event, detection, or incident directly - they
+each invoke Sentinel's own pre-existing, already-tested logic wholesale.
+
+## 2026-09-06 — Next.js `allowedDevOrigins` and CORS: two real bugs found building the console
+
+Two genuine bugs surfaced building the first interactive (client-component) frontend in this repo -
+recorded because they silently broke functionality with no obvious error message:
+
+1. **Hydration silently failed** when the app was loaded via `http://127.0.0.1:3200` instead of
+   `http://localhost:3200`. Next.js 16 introduced `allowedDevOrigins` as a security default that
+   blocks cross-origin *dev* resource requests - and this blocks more than the HMR websocket; it
+   blocked the client bundle chunks needed for hydration entirely, leaving every "use client"
+   component visually present (server-rendered HTML) but permanently inert (no React fiber attached,
+   confirmed via `Object.keys(el).filter(k => k.startsWith('__react'))` returning empty). No console
+   error pointed at this - only a `⚠ Blocked cross-origin request` line in the dev server's own
+   stdout. Fixed by adding `allowedDevOrigins: ["127.0.0.1", "localhost"]` to `next.config.ts` in
+   **all three** Next.js apps (dashboard, missionnet-console, demo-control-console), since the same
+   127.0.0.1-vs-localhost mismatch could bite any of them the moment they grow a client component.
+2. **CORS blocked the browser's fetch** from the console (`:3200`) to the Demo Control API (`:8100`)
+   - a different origin. FastAPI has no CORS policy by default. Added `CORSMiddleware` to
+   `apps/demo_control/main.py` restricted to the console's own dev origins only; Sentinel's and
+   MissionNet's APIs don't need this yet because nothing calls them from browser JS on a different
+   port (their own dashboards use server-side `fetch` in Server Components, which isn't subject to
+   browser CORS).
+
+## 2026-09-06 — Phase 3 scenario-to-rule mapping uses the real DET catalog, not the prompt's numbering
+
+The Phase 3 continuation prompt's suggested scenarios cite DET-* IDs from the *original* blueprint
+suggestion list (DET-002 "Service Credential...", DET-003 "Mission-Critical Asset...", DET-004
+"Sensitive Record Access..."). Phase 2 deliberately renamed/renumbered these during implementation
+(see the "genuine signals only" decisions below) because the original names didn't correspond to
+achievable signals - the *actual, shipped, tested* catalog in `docs/detection-engine.md` is:
+DET-001 Repeated Authentication Failures, DET-002 Mission-Critical Asset Degraded Unexpectedly,
+DET-003 Sensitive Mission Record Access Anomaly, DET-004 Suspicious Telemetry Anomaly, DET-005
+Multi-Signal Asset Compromise Indicator, DET-006 Identity Compromise Indicator (token revoke +
+record access).
+
+Rather than force a scenario to reference a rule ID that doesn't do what the scenario name implies,
+each Phase 3 scenario targets the rule that actually matches its *described behavior*:
+- SCN-001 "Repeated Authentication Failures" → **DET-001** (matches on both name and number).
+- SCN-002 "Service Credential Anomaly" → **DET-006** (the real token-revoke-based identity rule;
+  the prompt said "DET-002", which is asset degradation in the shipped catalog, not credentials).
+- SCN-003 "Mission-Critical Asset Degradation" → **DET-002** (prompt said "DET-003").
+- SCN-004 "Sensitive Record Access Anomaly" → **DET-003** (prompt said "DET-004").
+- SCN-010 combines all of the above plus DET-005 (multi-signal correlation falls out naturally when
+  SCN-003's degrade and a telemetry injection land on the same asset within the correlation window).
+
+This is called out explicitly, in code comments and in each scenario YAML's `description`, so a
+future reader isn't confused by scenario name vs. rule ID appearing mismatched.
+
 ## 2026-09-06 — Project decomposition (mandatory, do not lose this)
 
 The prototype is **three connected deliverables**, all required. None may be skipped or faked:

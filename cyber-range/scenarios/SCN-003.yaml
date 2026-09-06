@@ -1,0 +1,36 @@
+id: SCN-003
+version: 1.0.0
+name: Mission-Critical Asset Degradation
+description: >
+  Degrades a mission-critical MissionNet asset through the real lab-control API (POST
+  /lab/state/{asset_id}/degrade) to trigger Sentinel's DET-002 rule (asset.degrade on a
+  criticality >= 4 asset). Note: the rule ID here is DET-002, not "DET-003" as the original
+  scenario brief suggested - see DECISIONS.md.
+risk_level: safe_lab_only
+preconditions:
+  missionnet_status: nominal
+steps:
+  - id: step-1
+    action: degrade_asset
+    target: mission-data-api-01
+    parameters:
+      reason: synthetic_lab_scenario
+expected_observations:
+  missionnet:
+    - event_type: asset.degrade
+      asset_id: mission-data-api-01
+  sentinel:
+    detections:
+      - rule_id: DET-002
+    incidents:
+      min_count: 1
+      primary_asset_id: mission-data-api-01
+success_conditions:
+  - missionnet_event_observed
+  - normalized_event_observed
+  - expected_detection_observed
+  - incident_created
+  - evidence_link_verified
+  - no_duplicate_on_replay
+reset:
+  strategy: lab_reset

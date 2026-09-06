@@ -1,0 +1,35 @@
+id: SCN-001
+version: 1.0.0
+name: Repeated Authentication Failures
+description: >
+  Generates a burst of failed logins against a real MissionNet identity, over MissionNet's real
+  POST /identity/login endpoint, to trigger Sentinel's DET-001 repeated-authentication-failure
+  rule. No event is written directly to Sentinel - only genuine MissionNet auth.failure audit rows.
+risk_level: safe_lab_only
+preconditions:
+  missionnet_status: nominal
+steps:
+  - id: step-1
+    action: auth_failure
+    target: j.rivera
+    repeat: 3
+    parameters:
+      reason: synthetic_lab_scenario
+expected_observations:
+  missionnet:
+    - event_type: auth.failure
+      count: 3
+  sentinel:
+    detections:
+      - rule_id: DET-001
+    incidents:
+      min_count: 1
+success_conditions:
+  - missionnet_event_observed
+  - normalized_event_observed
+  - expected_detection_observed
+  - incident_created
+  - evidence_link_verified
+  - no_duplicate_on_replay
+reset:
+  strategy: lab_reset

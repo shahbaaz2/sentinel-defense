@@ -1,0 +1,122 @@
+"""Every action a scenario step can perform - and nothing else. Each function makes exactly one
+real HTTP call to MissionNet's public or lab-control API. There is no action here, or anywhere in
+this package, that writes to Sentinel or fabricates a MissionNet event - that is the whole point
+of the Scenario Controller's safety boundary (blueprint §17, Phase 3 continuation prompt §3).
+"""
+
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import httpx
+
+from apps.demo_control.config import settings
+
+
+class ActionError(Exception):
+    def __init__(self, action: str, detail: str):
+        super().__init__(f"action {action!r} failed: {detail}")
+        self.action = action
+        self.detail = detail
+
+
+def _lab_headers() -> dict[str, str]:
+    return {"X-Lab-Secret": settings.missionnet_lab_secret}
+
+
+async def _post(client: httpx.AsyncClient, path: str, **kwargs) -> dict:
+    resp = await client.post(path, **kwargs)
+    if resp.status_code >= 400:
+        raise ActionError(path, f"{resp.status_code}: {resp.text}")
+    return resp.json()
+
+
+async def _get(client: httpx.AsyncClient, path: str, **kwargs) -> dict:
+    resp = await client.get(path, **kwargs)
+    if resp.status_code >= 400:
+        raise ActionError(path, f"{resp.status_code}: {resp.text}")
+    return resp.json()
+
+
+async def auth_failure(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    return await _post(
+        client, "/identity/login", json={"username": target, "password": "wrong-on-purpose"}
+    )
+
+
+async def auth_success(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    password = parameters.get("password", "SynthLab#2026")
+    return await _post(client, "/identity/login", json={"username": target, "password": password})
+
+
+async def degrade_asset(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    return await _post(
+        client,
+        f"/lab/state/{target}/degrade",
+        headers=_lab_headers(),
+        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+    )
+
+
+async def quarantine_asset(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    return await _post(
+        client,
+        f"/lab/assets/{target}/quarantine",
+        headers=_lab_headers(),
+        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+    )
+
+
+async def restore_asset(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    return await _post(
+        client,
+        f"/lab/assets/{target}/restore",
+        headers=_lab_headers(),
+        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+    )
+
+
+async def revoke_token(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    return await _post(
+        client,
+        f"/lab/tokens/{target}/revoke",
+        headers=_lab_headers(),
+        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+    )
+
+
+async def inject_telemetry(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    return await _post(
+        client,
+        f"/lab/telemetry/{target}/inject",
+        headers=_lab_headers(),
+        json={
+            "battery": parameters.get("battery", 90),
+            "link_quality": parameters.get("link_quality", 95),
+        },
+    )
+
+
+async def access_record(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    actor_user_id = parameters["actor_user_id"]
+    return await _get(
+        client, f"/mission-data/records/{target}", params={"actor_user_id": actor_user_id}
+    )
+
+
+async def snapshot_evidence(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
+    return await _post(client, "/lab/evidence/snapshot", headers=_lab_headers(), json={})
+
+
+ActionFn = Callable[[httpx.AsyncClient, str, dict[str, Any]], Awaitable[dict]]
+
+ACTIONS: dict[str, ActionFn] = {
+    "auth_failure": auth_failure,
+    "auth_success": auth_success,
+    "degrade_asset": degrade_asset,
+    "quarantine_asset": quarantine_asset,
+    "restore_asset": restore_asset,
+    "revoke_token": revoke_token,
+    "inject_telemetry": inject_telemetry,
+    "access_record": access_record,
+    "snapshot_evidence": snapshot_evidence,
+}

@@ -3,112 +3,152 @@
 Current phase, what is actually verified working (not just present), and the next task. Update this
 at every phase checkpoint — never claim something works without having run the check.
 
-## Current phase: Phase 2 — COMPLETE (all 15 Definition-of-Done items verified)
+## Current phase: Phase 3 — COMPLETE (all 19 Definition-of-Done items verified)
 
-### Phase 0 + 1 recap (see git history / earlier sections for full detail)
-Repo scaffold, Sentinel/MissionNet API shells, both dashboards, PostgreSQL in Colima, MissionNet's
-full synthetic data model + lab-control API + Operations Console — all verified end-to-end and
-committed (`0fa4286`, `3e7618e`).
+### Phase 0-2 recap (see git history for full detail)
+Repo scaffold, MissionNet's full synthetic data model + lab-control API + Operations Console,
+Sentinel's real ingestion/normalization/deterministic-detection/correlation pipeline with 6 rules
+(DET-001..006), Sentinel API + dashboard — all verified end-to-end and committed
+(`0fa4286`, `3e7618e`, `43525c8`).
 
-### Phase 2 — verified working
+### Phase 3 — verified working
 
-**MissionNet extensions** (genuine signals, not fabricated - see DECISIONS.md):
-- `POST /identity/login` — real auth against seeded synthetic identities, writes
-  `auth.success`/`auth.failure` audit events. `IdentityUser.synthetic_password` added via migration
-  `ae25b1ea2ef9`.
-- `GET /mission-data/records/{id}?actor_user_id=...` — writes `record.access` audit events.
-- `GET /audit` and `GET /telemetry` now support `?since=<ISO8601>&limit=<n>` ascending polling.
-- `POST /lab/telemetry/{asset_id}/inject` — controlled synthetic telemetry for testing anomaly
-  detection, lab-secret gated like every other `/lab/*` endpoint.
-- 6 new integration tests in `tests/integration/test_missionnet_auth_and_access.py`, all passing
-  against the real Postgres `missionnet` database.
+**Demo Control as a fourth, independent product** (`apps/demo_control` backend +
+`apps/demo-control-console` frontend, own `democontrol` Postgres database migrated via
+`infrastructure/migrations/demo_control` — verified with `\dt` showing `scenario_runs` +
+`alembic_version`). Visually distinct dark "mission control" theme from Sentinel's and MissionNet's
+light zinc dashboards.
 
-**Sentinel's own persistence** (`domain/models/orm.py`, migrated via
-`infrastructure/migrations/sentinel`, applied to the real `sentinel` database — verified with
-`\dt` showing all 9 tables + `alembic_version`):
-`raw_events`, `assets`, `normalized_events`, `detections`, `detection_event_links`, `incidents`,
-`incident_detection_links`, `incident_event_links`, `ingestion_cursors`.
+**Five scenario definitions** (`cyber-range/scenarios/SCN-{001,002,003,004,010}.yaml`), declarative
+YAML validated by a Pydantic schema (`apps/demo_control/scenarios.py`) at load time. Each targets a
+real rule from Phase 2's *actual shipped* DET catalog rather than the original blueprint's numbering
+(documented explicitly in DECISIONS.md and in each scenario's own description, since they differ):
+SCN-001→DET-001, SCN-002→DET-006, SCN-003→DET-002, SCN-004→DET-003, SCN-010→all five plus the
+cross-signal DET-005.
 
-**Event source adapter boundary** (`services/event_ingestor/ports.py` — vendor-neutral
-`EventSourceAdapter` Protocol) with `integrations/missionnet/adapter.py` (real HTTP polling, two
-stream instances) and `integrations/missionnet/mapper.py` (SOURCE → NORMALIZER → CANONICAL,
-13 passing unit tests in `tests/unit/test_missionnet_mapper.py` covering every audit action,
-telemetry severity thresholds, and rejection of unknown event types).
+**Action registry** (`apps/demo_control/actions.py`): 9 functions, each exactly one real HTTP call to
+MissionNet's public or `/lab/*` API — `auth_failure`, `auth_success`, `degrade_asset`,
+`quarantine_asset`, `restore_asset`, `revoke_token`, `inject_telemetry`, `access_record`,
+`snapshot_evidence`. No function anywhere in this package writes to Sentinel's tables or fabricates a
+MissionNet event.
 
-**Ingestion service** (`services/event_ingestor/service.py`): idempotent (verified — a second
-`make ingest-once` against unchanged MissionNet data ingests 0 new events), cursor-tracked per
-`(source, stream)`, preserves raw payload + SHA-256 hash before any normalization. Fixed a real
-SQLAlchemy flush-ordering bug along the way (recorded in DECISIONS.md so it isn't rediscovered).
-`sync_missionnet_assets` upserts Sentinel's own `assets` table from MissionNet's `/assets`.
+**Execution engine** (`apps/demo_control/runner.py`): the full state machine (PENDING → PREPARING →
+RUNNING → WAITING_FOR_TELEMETRY → WAITING_FOR_SENTINEL → VERIFYING → PASSED/FAILED, CANCELLED
+reachable throughout), with every transition persisted immediately so `GET /api/v1/runs/{id}` always
+reflects genuine progress. Bounded polling (configurable interval/timeout, no bare `sleep()`) for
+both the MissionNet-observation and Sentinel-observation waits.
 
-**Deterministic detection engine** (`services/detection_engine/`): 6 rules (DET-001 through
-DET-006, see `docs/detection-engine.md`) as pure, DB-free functions — 13 passing unit tests
-(`tests/unit/test_detection_rules.py`) covering fire/no-fire/window-boundary/no-cross-contamination
-for every rule. Idempotent via a `dedupe_key` on each `Detection` row.
+**Verification engine** (`apps/demo_control/verification.py`): derives all 6 PASS/FAIL checks
+(`missionnet_event_observed`, `normalized_event_observed`, `expected_detection_observed`,
+`incident_created`, `evidence_link_verified`, `no_duplicate_on_replay`) from Sentinel's real read
+APIs, baseline-diffed so it works correctly whether or not the scenario reset first. 21 unit tests
+(schema, step-expansion, verification logic against a mocked Sentinel client via
+`httpx.MockTransport`) pass with zero live services required.
 
-**Incident correlation engine** (`services/incident_engine/`): merges related open detections by
-`correlation_key` (asset or identity) within a 10-minute window into `Incident` rows with real
-relational evidence links (`docs/incident-correlation.md`). No AI anywhere in this decision.
+**Two new Sentinel endpoints** (`apps/api/admin_routes.py`, Phase 3 addition to Sentinel, not Demo
+Control): `POST /api/v1/ingest/run` (the exact Phase 2 pipeline, refactored into
+`services/event_ingestor/pipeline.py` so `make ingest-once` and this endpoint share one code path)
+and `POST /api/v1/admin/reset`. These are the *only* two non-GET calls Demo Control ever makes to
+Sentinel, and neither writes an event/detection/incident directly — each invokes Sentinel's own
+pre-existing, already-tested logic wholesale.
 
-**Sentinel API** (`apps/api/routes.py`): `/api/v1/assets[/{id}]`, `/api/v1/events[/{id}]`
-(filterable by severity/source/asset_id/since/until), `/api/v1/detections[/{id}]`,
-`/api/v1/incidents[/{id}]` (detail includes full evidence — linked detections and their exact
-source events), `/api/v1/metrics/summary`. All curl-verified against real ingested data.
+**Demo Control API** (`apps/demo_control/routes.py`): `GET /api/v1/status`,
+`GET /api/v1/scenarios[/{id}]`, `POST /api/v1/scenarios/{id}/run`, `GET /api/v1/runs[/{id}]`,
+`GET /api/v1/runs/{id}/timeline`, `GET /api/v1/runs/{id}/verification`,
+`POST /api/v1/runs/{id}/cancel`, `POST /api/v1/runs/{id}/reset` — all exercised by curl and by the
+integration test suite.
 
-**Sentinel dashboard**: Mission Cyber Posture overview (protected assets, event/detection/incident
-counts, severity distribution, MissionNet connectivity, last ingestion time, explicit
-`External AI API: disabled`), Live Incidents table, Incident Detail page with separate
-**Observed Evidence** / **Deterministic Detections** / **Incident Correlation** sections and an
-explicit **"AI Analyst: NOT ENABLED — scheduled for a later phase"** placeholder. Verified via
-`tsc --noEmit`, `eslint`, and a live browser walkthrough (screenshotted) showing a real 3-detection,
-1-incident correlation produced by genuine MissionNet activity.
+**Demo Control Console** (`apps/demo-control-console`): main screen with live MissionNet/Sentinel/
+AI-analyst status, all 5 scenarios with a working **Run Scenario** button; run page with a real live
+timeline (polled every 1.5s, entries are exactly what the runner wrote, never client-side
+animation), a 6-check verification panel, resulting-incident link-outs to Sentinel's own incident
+detail page, and Cancel/Reset Lab controls. Verified with a full browser walkthrough, not just API
+calls: clicked **Run Scenario** on SCN-001 and SCN-010, watched both reach PASSED with the exact
+timeline shown below, followed a resulting-incident link into Sentinel's dashboard, confirmed
+MissionNet's console showed DEGRADED, clicked **Reset Lab** and confirmed MissionNet returned to
+NOMINAL via a direct API check.
 
-**One real end-to-end run, exactly as specified in the Phase 2 end-state:**
-1. `make reset-lab` → MissionNet nominal, Sentinel has no data.
-2. `POST /lab/state/mission-data-api-01/degrade` + `POST /lab/telemetry/.../inject` (both real
-   MissionNet lab-control calls, not Sentinel-internal).
-3. `make ingest-once` → MissionNet's genuine audit+telemetry rows ingested, normalized, 3 detections
-   created (DET-002, DET-004, DET-005), correlated into **1** incident (1 created, 2 merged-in).
-4. `GET /api/v1/incidents` and the dashboard both show it with severity `high`, category
-   `asset-degradation`, and evidence tracing back to the exact 2 source events.
-5. Re-running `make ingest-once` created 0 new events/detections/incidents (idempotency proven).
-6. `make reset-lab` again + repeating step 2-3 reproduced the identical result
-   (`test_reset_lab_and_sentinel_reset_reproduce_identical_result`).
+**Two real bugs found and fixed while building the first interactive frontend in this repo**
+(documented in DECISIONS.md so they aren't rediscovered):
+1. Next.js 16's `allowedDevOrigins` silently blocked hydration when loaded via `127.0.0.1` instead
+   of `localhost` — every button was visually present but inert, no console error. Fixed in all
+   three Next.js apps' `next.config.ts`.
+2. CORS blocked the console's browser-side fetch to the Demo Control API (different port = different
+   origin). Fixed by adding `CORSMiddleware` to `apps/demo_control/main.py`.
 
-**Tests**: 58 passing total (`'.venv/bin/pytest -q'`) — 26 unit (13 mapper + 13 rules, both DB-free)
-+ 32 integration (24 pre-existing MissionNet/Phase-0-1 + 5 new full-pipeline end-to-end tests in
-`tests/integration/test_sentinel_ingestion_pipeline.py`, covering: full pipeline detection, ingestion
-idempotency, benign-activity-creates-nothing, multi-signal correlation-into-one-incident, and
-reset-then-reproduce). `ruff check .` and `mypy apps domain services integrations` both clean.
-`tsc --noEmit` and `eslint` clean on both frontend apps. Full `scripts/healthcheck.sh` passes,
-including new "Sentinel DB migration applied" and existing checks.
+### One real, observed SCN-010 flagship run (via the actual browser UI, not just the API)
 
-### Phase 2 Definition of Done (continuation prompt §16) — all 15 items verified
-- [x] Sentinel observes real MissionNet-produced events (real HTTP polling, not DB access).
-- [x] MissionNet source events convert into canonical `NormalizedEvent`/`NormalizedEventRecord`.
-- [x] Ingestion is idempotent (proven by test and by manual re-run).
-- [x] Source provenance retained (`raw_events` with SHA-256, referenced by every normalized event).
-- [x] Deterministic rules create detections (6 rules, all rule tests pass).
-- [x] Rule tests pass (13/13).
-- [x] Related detections/events become an incident (correlation engine, tested).
-- [x] Incident contains real evidence links (relational link tables, not JSON blobs).
-- [x] Sentinel API exposes events, detections, incidents, and assets.
-- [x] Sentinel dashboard renders actual backend information (verified live in-browser).
-- [x] One controlled MissionNet state/action produces a visible Sentinel incident end-to-end.
-- [x] No AI is involved in deciding whether the detection or incident exists.
-- [x] The complete prior test suite still passes (58/58, including all Phase 0/1 tests).
-- [x] Ruff/mypy/TypeScript checks pass.
-- [x] Documentation updated (this file, DECISIONS.md, RUNBOOK.md, docs/data-contracts.md, plus new
-      docs/detection-engine.md and docs/incident-correlation.md).
+```
+2:31:27 PM  Scenario preparing
+2:31:27 PM  Resetting lab to deterministic baseline
+2:31:27 PM  MissionNet baseline verified
+2:31:27 PM  auth_failure -> j.rivera            (x3)
+2:31:28 PM  revoke_token -> tok-svc-mission-data-01
+2:31:28 PM  access_record -> rec-000
+2:31:28 PM  degrade_asset -> mission-data-api-01
+2:31:28 PM  inject_telemetry -> mission-data-api-01
+2:31:28 PM  MissionNet actions complete - waiting for audit/telemetry
+2:31:29 PM  MissionNet event(s) observed (8)
+2:31:29 PM  Triggering Sentinel ingestion
+2:31:30 PM  Sentinel normalized event(s) observed
+2:31:30 PM  Detection(s) triggered: 5
+2:31:30 PM  Incident(s) created: INC-58562424-..., INC-e6317ef4-..., INC-3dad4fc3-...
+2:31:30 PM  Evidence links verified
+2:31:30 PM  Scenario PASSED
+```
+
+All 6 verification checks green. MissionNet's console then showed **DEGRADED** with the Mission Data
+service card amber; Sentinel's Live Incidents page showed exactly these 3 incidents — one
+`medium`/credential-abuse (DET-001 alone), one `high`/asset-degradation (DET-002+DET-004+DET-005
+correlated together, 3 detections on one incident), one `high`/identity-compromise (DET-006 alone).
+This is exactly what the deterministic correlation engine should produce given different
+correlation keys — the scenario's own YAML documents this expectation and the run reproduced it
+exactly, without any hard-coded success. Re-ran SCN-010 after a reset: PASSED again with the same
+shape (5 detections, 3 incidents) and entirely new, disjoint IDs — reproducibility confirmed.
+
+### Tests and checks actually run
+- **85 tests passing** (`.venv/bin/pytest -q`): 60 unit (39 pre-existing Phase 0-2 + 21 new: 11
+  scenario-schema/loader, 4 runner step-expansion, 6 verification-engine-against-mocked-Sentinel,
+  the latter using `httpx.MockTransport` so they need zero live services) + 25 integration (19
+  pre-existing + 6 new Demo Control end-to-end tests against the real live stack: SCN-003
+  full-chain with a cross-check against Sentinel's own API, SCN-010 flagship 5-detection/
+  ≥3-incident, SCN-010 reproducibility-after-reset, precondition-failure-reported-as-FAILED,
+  cancel-does-not-report-FAILED, reset-endpoint-returns-MissionNet-to-nominal).
+- `ruff check .` and `mypy apps domain services integrations` (51 files) both clean.
+- `tsc --noEmit` and `eslint` clean on all three Next.js apps (dashboard, missionnet-console,
+  demo-control-console).
+- Full `scripts/healthcheck.sh` passes, including three new Demo Control checks.
+
+### Phase 3 Definition of Done (continuation prompt §20) — all 19 items verified
+- [x] Demo Control exists as a distinct runnable product (own backend, frontend, database, visually
+      distinct theme).
+- [x] Scenario definitions are declarative (YAML) and versionable (`version` field, `docs/scenario-controller.md`).
+- [x] SCN-001, SCN-002, SCN-003, SCN-004, and SCN-010 all exist and pass.
+- [x] Scenario actions only go through approved MissionNet public/lab interfaces (`actions.py`).
+- [x] Controller cannot directly create Sentinel events/detections/incidents (see DECISIONS.md's
+      dedicated proof entry — no import of Sentinel's domain/services modules anywhere in
+      `apps/demo_control`).
+- [x] Scenario execution state is persisted (`scenario_runs` table, real Postgres).
+- [x] Real MissionNet event IDs are captured (`missionnet_event_ids`, from polling `/audit`/`/telemetry`).
+- [x] Real Sentinel normalized event IDs are captured (`sentinel_event_ids`, from `/api/v1/events`).
+- [x] Real detection IDs are captured (`detection_ids`, baseline-diffed from `/api/v1/detections`).
+- [x] Real incident IDs are captured (`incident_ids`, baseline-diffed from `/api/v1/incidents`).
+- [x] PASS/FAIL is based on real verification (all 6 checks derived from live API responses).
+- [x] Demo Control UI shows live progress (1.5s polling, real timeline entries).
+- [x] MissionNet UI reflects scenario state (verified: DEGRADED after SCN-010).
+- [x] Sentinel dashboard reflects genuine resulting incident state (verified: 3 real incidents shown).
+- [x] SCN-010 passes end to end (verified via browser UI, timeline above).
+- [x] Reset restores reproducible baseline (`Reset Lab` button verified via API + MissionNet health).
+- [x] SCN-010 passes again after reset (verified, disjoint IDs).
+- [x] Existing Phase 0-2 behavior remains intact (85 tests including all prior ones pass).
+- [x] All tests/lint/type/health checks pass; documentation updated; clean commit created (below).
 
 ### Next task
-Phase 3 — Demo & Scenario Control Plane. Build `services/scenario_controller`: a scenario
-catalog/API that starts named scenarios (SCN-001, and a first version of SCN-010) by calling
-MissionNet's real lab-control endpoints and emitting/replaying timed events — never by directly
-creating a Sentinel incident/detection/event. Acceptance target: starting a scenario changes
-MissionNet state and emits events; Sentinel independently detects/correlates them through the exact
-pipeline built in Phase 2; the Demo Control Plane discovers the resulting incident only through
-Sentinel's own API.
+Phase 4 (already substantially ahead of schedule from Phase 2's dashboard work) or Phase 5 — local
+AI analyst + RAG. Whichever is chosen, the same safety boundary applies: the LLM will receive a
+curated evidence packet built from exactly the `NormalizedEventRecord`/`Detection`/`Incident` rows
+already in Sentinel's database, and will return a schema-validated *assessment*, never a decision
+about whether a detection or incident exists — that remains Phase 2's deterministic code, untouched.
 
 ## Phase acceptance status
 
@@ -117,8 +157,8 @@ Sentinel's own API.
 | 0 — Repo/bootstrap/contracts | **Yes — verified** |
 | 1 — MissionNet real app | **Yes — verified** |
 | 2 — Sentinel event/detection/incident | **Yes — verified** |
-| 3 — Demo Control + SCN-010 causality | Not started |
-| 4 — Sentinel dashboard | Partially done ahead of schedule (Overview + Incidents + Incident Detail landed in Phase 2 to prove the causal chain visually; posture polish/SSE still open) |
+| 3 — Demo Control + SCN-010 causality | **Yes — verified** |
+| 4 — Sentinel dashboard | Overview + Incidents + Incident Detail done (Phase 2); posture polish/SSE pending |
 | 5 — Local AI analyst + RAG | Not started |
 | 6 — Playbooks/policy/approval | Not started |
 | 7 — Deterministic response + verification (MVP stopping point) | Not started |

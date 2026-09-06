@@ -1,0 +1,35 @@
+id: SCN-004
+version: 1.0.0
+name: Sensitive Record Access Anomaly
+description: >
+  Generates a burst of mission-record accesses by a single identity through MissionNet's real GET
+  /mission-data/records/{id} endpoint, to trigger Sentinel's DET-003 rule (>=5 record.access by
+  the same identity within 2 minutes). Note: the rule ID here is DET-003, not "DET-004" as the
+  original scenario brief suggested - see DECISIONS.md.
+risk_level: safe_lab_only
+preconditions:
+  missionnet_status: nominal
+steps:
+  - id: step-1
+    action: access_record
+    targets: [rec-000, rec-001, rec-002, rec-003, rec-004]
+    parameters:
+      actor_user_id: u-analyst-01
+expected_observations:
+  missionnet:
+    - event_type: record.access
+      count: 5
+  sentinel:
+    detections:
+      - rule_id: DET-003
+    incidents:
+      min_count: 1
+success_conditions:
+  - missionnet_event_observed
+  - normalized_event_observed
+  - expected_detection_observed
+  - incident_created
+  - evidence_link_verified
+  - no_duplicate_on_replay
+reset:
+  strategy: lab_reset

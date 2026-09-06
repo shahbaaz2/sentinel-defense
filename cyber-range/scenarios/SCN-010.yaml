@@ -1,0 +1,75 @@
+id: SCN-010
+version: 1.0.0
+name: Multi-Signal Compromise Demonstration
+description: >
+  Flagship live-demo scenario. Chains four independent, genuine MissionNet actions - an
+  authentication-failure burst, a service-credential revoke followed by record access under that
+  identity, a mission-critical asset degradation, and an anomalous telemetry injection on that
+  same asset - all through MissionNet's real public/lab APIs. This produces five independent
+  Sentinel detections (DET-001, DET-006, DET-002, DET-004, and the cross-signal DET-005, which
+  fires automatically because the degrade and telemetry anomaly land on the same asset within
+  DET-005's correlation window). Deterministic correlation merges DET-002/DET-004/DET-005 into one
+  high-severity incident (same asset, same window) while DET-001 and DET-006 remain separate
+  incidents (different correlation keys - different identities, no shared asset). This scenario
+  does not force everything into one incident: it reports exactly what the real correlation
+  engine produces.
+risk_level: safe_lab_only
+preconditions:
+  missionnet_status: nominal
+steps:
+  - id: step-1
+    action: auth_failure
+    target: j.rivera
+    repeat: 3
+    parameters:
+      reason: synthetic_lab_scenario
+  - id: step-2
+    action: revoke_token
+    target: tok-svc-mission-data-01
+    parameters:
+      reason: synthetic_lab_scenario
+  - id: step-3
+    action: access_record
+    target: rec-000
+    parameters:
+      actor_user_id: svc-mission-data-01
+  - id: step-4
+    action: degrade_asset
+    target: mission-data-api-01
+    parameters:
+      reason: synthetic_lab_scenario
+  - id: step-5
+    action: inject_telemetry
+    target: mission-data-api-01
+    parameters:
+      battery: 5
+      link_quality: 10
+expected_observations:
+  missionnet:
+    - event_type: auth.failure
+      count: 3
+    - event_type: token.revoke
+    - event_type: record.access
+    - event_type: asset.degrade
+      asset_id: mission-data-api-01
+    - event_type: telemetry.sample
+      asset_id: mission-data-api-01
+  sentinel:
+    detections:
+      - rule_id: DET-001
+      - rule_id: DET-006
+      - rule_id: DET-002
+      - rule_id: DET-004
+      - rule_id: DET-005
+    incidents:
+      min_count: 3
+      primary_asset_id: mission-data-api-01
+success_conditions:
+  - missionnet_event_observed
+  - normalized_event_observed
+  - expected_detection_observed
+  - incident_created
+  - evidence_link_verified
+  - no_duplicate_on_replay
+reset:
+  strategy: lab_reset

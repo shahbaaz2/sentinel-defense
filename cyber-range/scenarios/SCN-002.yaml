@@ -1,0 +1,42 @@
+id: SCN-002
+version: 1.0.0
+name: Service Credential Anomaly
+description: >
+  Revokes a real MissionNet service-account token, then accesses a mission record as that same
+  identity - both through MissionNet's real APIs (POST /lab/tokens/{id}/revoke, GET
+  /mission-data/records/{id}) - to trigger Sentinel's DET-006 identity-compromise correlation
+  rule (token revoke + record access, same identity, within window). Note: the rule ID here is
+  DET-006, not "DET-002" as the original scenario brief suggested - see DECISIONS.md for why the
+  shipped detection catalog differs from the original numbering.
+risk_level: safe_lab_only
+preconditions:
+  missionnet_status: nominal
+steps:
+  - id: step-1
+    action: revoke_token
+    target: tok-svc-mission-data-01
+    parameters:
+      reason: synthetic_lab_scenario
+  - id: step-2
+    action: access_record
+    target: rec-000
+    parameters:
+      actor_user_id: svc-mission-data-01
+expected_observations:
+  missionnet:
+    - event_type: token.revoke
+    - event_type: record.access
+  sentinel:
+    detections:
+      - rule_id: DET-006
+    incidents:
+      min_count: 1
+success_conditions:
+  - missionnet_event_observed
+  - normalized_event_observed
+  - expected_detection_observed
+  - incident_created
+  - evidence_link_verified
+  - no_duplicate_on_replay
+reset:
+  strategy: lab_reset
