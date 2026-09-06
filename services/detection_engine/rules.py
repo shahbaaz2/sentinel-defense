@@ -50,6 +50,8 @@ class Rule:
     version: str
     default_severity: str
     category: str
+    description: str
+    event_categories: list[str]
     mitre_techniques: list[str]
     evaluate: Callable[[list[EventView], dict[str, int]], list[RuleCandidate]]
 
@@ -270,6 +272,12 @@ RULES: list[Rule] = [
         version="1.0.0",
         default_severity="medium",
         category="credential-abuse",
+        description=(
+            f"Fires when the same identity produces {AUTH_FAILURE_THRESHOLD}+ auth.failure "
+            f"events within {int(AUTH_FAILURE_WINDOW.total_seconds() // 60)} minutes; escalates "
+            "to high if a successful login follows within the same window."
+        ),
+        event_categories=["identity"],
         mitre_techniques=["T1110"],  # Brute Force
         evaluate=_rule_repeated_auth_failures,
     ),
@@ -279,6 +287,11 @@ RULES: list[Rule] = [
         version="1.0.0",
         default_severity="high",
         category="asset-degradation",
+        description=(
+            f"Fires on a single asset.degrade event where the target asset's criticality is "
+            f">= {CRITICAL_ASSET_THRESHOLD}."
+        ),
+        event_categories=["application"],
         mitre_techniques=["T1489"],  # Service Stop
         evaluate=_rule_critical_asset_degraded,
     ),
@@ -288,6 +301,11 @@ RULES: list[Rule] = [
         version="1.0.0",
         default_severity="medium",
         category="data-access-anomaly",
+        description=(
+            f"Fires when the same identity produces {RECORD_ACCESS_THRESHOLD}+ record.access "
+            f"events within {int(RECORD_ACCESS_WINDOW.total_seconds() // 60)} minutes."
+        ),
+        event_categories=["application"],
         mitre_techniques=["T1213"],  # Data from Information Repositories
         evaluate=_rule_record_access_anomaly,
     ),
@@ -297,6 +315,11 @@ RULES: list[Rule] = [
         version="1.0.0",
         default_severity="medium",
         category="telemetry-anomaly",
+        description=(
+            "Fires on a single telemetry sample with medium/high/critical severity (low "
+            "battery or poor link quality, per the mapper's documented thresholds)."
+        ),
+        event_categories=["runtime"],
         mitre_techniques=[],
         evaluate=_rule_telemetry_anomaly,
     ),
@@ -306,6 +329,11 @@ RULES: list[Rule] = [
         version="1.0.0",
         default_severity="high",
         category="multi-signal-compromise",
+        description=(
+            f"Fires when an asset.degrade event and an anomalous telemetry sample land on the "
+            f"same asset within {int(MULTI_SIGNAL_WINDOW.total_seconds())} seconds."
+        ),
+        event_categories=["application", "runtime"],
         mitre_techniques=["T1489"],
         evaluate=_rule_multi_signal_asset_compromise,
     ),
@@ -315,6 +343,11 @@ RULES: list[Rule] = [
         version="1.0.0",
         default_severity="high",
         category="identity-compromise",
+        description=(
+            f"Fires when a token.revoke and a record.access event share the same identity "
+            f"within {int(TOKEN_RECORD_ACCESS_WINDOW.total_seconds() // 60)} minutes."
+        ),
+        event_categories=["identity", "application"],
         mitre_techniques=["T1078"],  # Valid Accounts
         evaluate=_rule_identity_compromise_token_and_access,
     ),

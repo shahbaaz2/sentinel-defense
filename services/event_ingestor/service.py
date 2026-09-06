@@ -13,6 +13,7 @@ import httpx
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domain.audit import write_audit
 from domain.models.orm import IngestionCursor, NormalizedEventRecord, RawEvent, SentinelAsset
 from integrations.missionnet.mapper import UnmappedEventTypeError, normalize_missionnet_event
 from services.event_ingestor.ports import EventSourceAdapter, RawSourceEvent
@@ -105,6 +106,15 @@ async def ingest_stream(
 
     if batch.next_cursor is not None:
         await _advance_cursor(session, source, stream, batch.next_cursor)
+
+    if to_insert:
+        await write_audit(
+            session,
+            entity_type="ingestion",
+            entity_id=f"{source}:{stream}",
+            action="ingestion.cycle_completed",
+            detail={"fetched": len(batch.events), "ingested": len(to_insert)},
+        )
 
     await session.commit()
 

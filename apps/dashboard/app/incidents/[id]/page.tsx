@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { IncidentWorkflowPanel } from "./IncidentWorkflowPanel";
 
 const API_BASE = process.env.SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
 
@@ -13,6 +14,8 @@ type Detection = {
   event_ids: string[];
 };
 
+type Note = { note_id: string; author: string; body: string; created_at: string };
+
 type IncidentDetail = {
   incident_id: string;
   title: string;
@@ -21,21 +24,33 @@ type IncidentDetail = {
   category: string;
   summary: string;
   primary_asset_id: string | null;
+  scenario_id: string | null;
+  assigned_to: string | null;
+  disposition: string | null;
+  resolved_at: string | null;
   mitre_techniques: string[];
   first_seen: string;
   last_seen: string;
+  created_at: string;
+  updated_at: string;
   detections: Detection[];
+  detection_ids: string[];
   event_ids: string[];
+  notes: Note[];
 };
 
 type NormalizedEvent = {
   event_id: string;
   timestamp: string;
   source: string;
+  source_event_id: string;
   event_category: string;
   event_type: string;
   severity: string;
+  asset_id: string | null;
+  user_id: string | null;
   summary: string;
+  raw_event_ref: string;
 };
 
 async function getJSON<T>(path: string): Promise<T | null> {
@@ -46,6 +61,18 @@ async function getJSON<T>(path: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+function correlationExplanation(incident: IncidentDetail): string {
+  if (incident.detections.length <= 1) {
+    return "A single detection was sufficient to open this incident - no correlation with other detections was needed.";
+  }
+  const basis = incident.primary_asset_id ? "the same asset" : "the same identity";
+  return (
+    `${incident.detections.length} detections were correlated because they share ${basis} ` +
+    `and occurred within the deterministic correlation window (see docs/incident-correlation.md). ` +
+    `This is a fixed rule, not a judgment call.`
+  );
 }
 
 export default async function IncidentDetailPage(props: PageProps<"/incidents/[id]">) {
@@ -77,6 +104,7 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
           <p className="mt-1 font-mono text-xs text-zinc-500">{incident.incident_id}</p>
         </div>
 
+        {/* A. INCIDENT SUMMARY */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
             <p className="text-xs text-zinc-500">Severity</p>
@@ -87,15 +115,34 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
             <p className="font-semibold uppercase">{incident.status}</p>
           </div>
           <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-            <p className="text-xs text-zinc-500">Category</p>
-            <p className="font-semibold">{incident.category}</p>
-          </div>
-          <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
             <p className="text-xs text-zinc-500">Primary Asset</p>
             <p className="font-mono text-sm">{incident.primary_asset_id ?? "—"}</p>
           </div>
+          <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+            <p className="text-xs text-zinc-500">Detections / Evidence</p>
+            <p className="font-semibold">
+              {incident.detection_ids.length} / {incident.event_ids.length}
+            </p>
+          </div>
+          <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+            <p className="text-xs text-zinc-500">First Seen</p>
+            <p className="text-sm">{new Date(incident.first_seen).toLocaleString()}</p>
+          </div>
+          <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+            <p className="text-xs text-zinc-500">Last Seen</p>
+            <p className="text-sm">{new Date(incident.last_seen).toLocaleString()}</p>
+          </div>
+          <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+            <p className="text-xs text-zinc-500">Assigned Analyst</p>
+            <p className="text-sm">{incident.assigned_to ?? "unassigned"}</p>
+          </div>
+          <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+            <p className="text-xs text-zinc-500">Disposition</p>
+            <p className="text-sm">{incident.disposition ?? "undetermined"}</p>
+          </div>
         </div>
 
+        {/* B. OBSERVED EVIDENCE */}
         <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
             Observed Evidence
@@ -111,17 +158,31 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
                     key={event.event_id}
                     className="rounded border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800"
                   >
-                    <span className="font-mono text-zinc-500">
-                      {new Date(event.timestamp).toLocaleString()}
-                    </span>{" "}
-                    <span className="font-medium">{event.event_type}</span> (
-                    {event.event_category}, {event.severity}) — {event.summary}
+                    <div>
+                      <span className="font-mono text-zinc-500">
+                        {new Date(event.timestamp).toLocaleString()}
+                      </span>{" "}
+                      <span className="font-medium">{event.event_type}</span> (
+                      {event.event_category}, {event.severity}) — {event.summary}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-zinc-400">
+                      <span>source: {event.source}</span>
+                      <span>asset: {event.asset_id ?? "—"}</span>
+                      <span>user: {event.user_id ?? "—"}</span>
+                      <Link
+                        href={`/events/${event.event_id}`}
+                        className="text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        source_event_id: {event.source_event_id} → view raw provenance
+                      </Link>
+                    </div>
                   </li>
                 ),
             )}
           </ul>
         </section>
 
+        {/* C. DETERMINISTIC DETECTIONS */}
         <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
             Deterministic Detections
@@ -143,6 +204,9 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
                 </div>
                 <p className="font-medium">{d.rule_name}</p>
                 <p className="text-xs text-zinc-600 dark:text-zinc-400">{d.evidence_summary}</p>
+                <p className="mt-1 font-mono text-[10px] text-zinc-400">
+                  matching events: {d.event_ids.join(", ")}
+                </p>
                 {d.mitre_techniques.length > 0 && (
                   <p className="mt-1 font-mono text-xs text-zinc-500">
                     ATT&CK: {d.mitre_techniques.join(", ")}
@@ -153,23 +217,63 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
           </ul>
         </section>
 
+        {/* D. CORRELATION */}
         <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
             Incident Correlation
           </h2>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {incident.detections.length} detection(s) correlated by shared asset/identity within
-            the correlation window into this one incident. First seen{" "}
-            {new Date(incident.first_seen).toLocaleString()}, last seen{" "}
-            {new Date(incident.last_seen).toLocaleString()}.
-          </p>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">{correlationExplanation(incident)}</p>
         </section>
 
+        {/* E. AI ANALYST */}
         <section className="rounded-lg border border-dashed border-zinc-300 p-4 dark:border-zinc-700">
           <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-zinc-500">
             AI Analyst
           </h2>
-          <p className="text-sm text-zinc-500">NOT ENABLED — scheduled for a later phase.</p>
+          <p className="text-sm text-zinc-500">NOT ENABLED — scheduled for Phase 5.</p>
+        </section>
+
+        {/* F. ANALYST WORKFLOW */}
+        <IncidentWorkflowPanel
+          incidentId={incident.incident_id}
+          initialStatus={incident.status}
+          initialAssignedTo={incident.assigned_to}
+          initialDisposition={incident.disposition}
+          initialNotes={incident.notes}
+        />
+
+        {/* G. PROVENANCE */}
+        <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+            Provenance
+          </h2>
+          <dl className="grid grid-cols-1 gap-y-2 text-xs sm:grid-cols-2">
+            <dt className="text-zinc-500">Source event IDs</dt>
+            <dd className="font-mono">{incident.event_ids.join(", ") || "—"}</dd>
+            <dt className="text-zinc-500">Detection IDs</dt>
+            <dd className="font-mono">{incident.detection_ids.join(", ") || "—"}</dd>
+            <dt className="text-zinc-500">Rule version(s)</dt>
+            <dd className="font-mono">
+              {[...new Set(incident.detections.map((d) => `${d.rule_id}@${d.rule_version}`))].join(
+                ", ",
+              ) || "—"}
+            </dd>
+            <dt className="text-zinc-500">Scenario / Run provenance</dt>
+            <dd className="font-mono">{incident.scenario_id ?? "not scenario-attributed"}</dd>
+            <dt className="text-zinc-500">Created</dt>
+            <dd className="font-mono">{new Date(incident.created_at).toLocaleString()}</dd>
+            <dt className="text-zinc-500">Last updated</dt>
+            <dd className="font-mono">{new Date(incident.updated_at).toLocaleString()}</dd>
+          </dl>
+          <p className="mt-3 text-xs text-zinc-500">
+            Full audit trail:{" "}
+            <Link
+              href={`/audit?entity_id=${incident.incident_id}`}
+              className="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              view in Audit / Provenance →
+            </Link>
+          </p>
         </section>
       </main>
     </div>

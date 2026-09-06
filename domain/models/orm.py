@@ -137,8 +137,12 @@ class Incident(Base):
     incident_id: Mapped[str] = mapped_column(primary_key=True)
     title: Mapped[str]
     severity: Mapped[str]
-    status: Mapped[str] = mapped_column(default="new")
-    """blueprint §9.4 state machine; Phase 2 only ever produces 'new'."""
+    status: Mapped[str] = mapped_column(default="OPEN")
+    """Phase 4 analyst-workflow vocabulary: OPEN, INVESTIGATING, MONITORING, RESOLVED, DISMISSED.
+    This is deliberately a *different, earlier* state machine than blueprint §9.4's full
+    new/triage/.../awaiting_approval/responding/contained/closed - that one describes the response
+    lifecycle (Phase 6/7, once playbooks and containment exist). This one describes analyst triage,
+    which is all that exists so far. Phase 6 can extend this vocabulary rather than replace it."""
     confidence: Mapped[float] = mapped_column(default=1.0)
     primary_asset_id: Mapped[str | None] = mapped_column(default=None)
     correlation_key: Mapped[str | None] = mapped_column(default=None)
@@ -149,11 +153,52 @@ class Incident(Base):
     mitre_techniques: Mapped[list[str]] = mapped_column(JSON, default=list)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    scenario_id: Mapped[str | None] = mapped_column(default=None)
+    """Set once at creation from the triggering detection's evidence provenance, never overwritten
+    by a later merge - an incident that started from a real scenario stays attributed to it."""
     assigned_to: Mapped[str | None] = mapped_column(default=None)
+    disposition: Mapped[str | None] = mapped_column(default=None)
+    """Analyst-set only, never auto-assigned - see DECISIONS.md. One of TRUE_POSITIVE,
+    BENIGN_TRUE_POSITIVE, FALSE_POSITIVE, TEST_SCENARIO, UNDETERMINED."""
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class IncidentNote(Base):
+    """Free-text analyst notes - additive, never edited/deleted, so the note history itself is
+    part of the incident's provenance trail."""
+
+    __tablename__ = "incident_notes"
+
+    note_id: Mapped[str] = mapped_column(primary_key=True)
+    incident_id: Mapped[str] = mapped_column(ForeignKey("incidents.incident_id"))
+    author: Mapped[str]
+    body: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditLogEntry(Base):
+    """Sentinel's own audit/provenance trail (blueprint §10 `audit_log`) - append-only by
+    convention (no code path updates or deletes a row). Every ingestion cycle, detection, incident,
+    and analyst workflow change writes exactly one row here."""
+
+    __tablename__ = "audit_log"
+
+    audit_id: Mapped[str] = mapped_column(primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    entity_type: Mapped[str]
+    """One of: ingestion, event, detection, incident."""
+    entity_id: Mapped[str]
+    action: Mapped[str]
+    actor: Mapped[str] = mapped_column(default="system")
+    """'system' for automated pipeline actions; an analyst identifier for workflow changes."""
+    source: Mapped[str] = mapped_column(default="sentinel")
+    scenario_id: Mapped[str | None] = mapped_column(default=None)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    """Structured metadata only - counts, IDs, old/new values. Never raw payloads or secrets."""
 
 
 class IncidentDetectionLink(Base):

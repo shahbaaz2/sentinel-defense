@@ -85,6 +85,7 @@ class AuditEventOut(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(max_length=256)
     password: str = Field(max_length=256)
+    scenario_id: str | None = Field(default=None, max_length=128)
 
 
 class LoginResponse(BaseModel):

@@ -73,6 +73,49 @@ Or drive it visually from http://127.0.0.1:3200 (`make demo-control-console`) - 
 `make reset-demo` runs `make reset-lab` (MissionNet + Sentinel) and additionally clears Demo
 Control's own scenario-run history.
 
+## SOC operator walkthrough (Phase 4)
+
+With MissionNet, Sentinel API, Demo Control, and the Sentinel dashboard all up
+(`make missionnet`, `make api`, `make demo-control`, `make dashboard`):
+
+1. **Run a scenario and watch it land live.** Trigger any scenario (see "Run a scenario through
+   Demo Control" above) and open http://127.0.0.1:3000 — the Overview page updates within a couple
+   of seconds via its SSE connection, with no manual refresh. Open the Live Incidents page
+   (http://127.0.0.1:3000/incidents) to see the resulting incident(s).
+
+2. **Investigate an incident.** Click into an incident from either the Overview's Recent Incidents
+   table or the Incidents list. The detail page shows, in order: the summary cards, the raw
+   observed evidence (with links to each event's full raw payload), the deterministic detections
+   that fired, a plain-language explanation of why they were correlated together, the (currently
+   disabled) AI Analyst placeholder, the analyst workflow panel, and a provenance section linking to
+   the audit trail.
+
+3. **Update incident status/assignment/disposition.** In the Analyst Workflow panel (section F):
+   change the Status dropdown to progress OPEN → INVESTIGATING → MONITORING → RESOLVED/DISMISSED;
+   type an analyst name into the Assigned Analyst field and click Save; add free-text notes; set a
+   Disposition once you've determined the truth of the incident. Each change is a direct
+   PATCH/POST to Sentinel's API and takes effect immediately (confirmed by the Summary card updating
+   after each save).
+
+4. **Verify provenance.** Every workflow change above writes a row to `audit_log`. Open
+   http://127.0.0.1:3000/audit and filter by `entity_id=<incident_id>` (or follow the "Full audit
+   trail" link from the incident's Provenance section) to see the complete history — status changes,
+   assignment, notes, disposition, and the original `incident.created`/`incident.detection_merged`
+   entries from when Sentinel's detection engine correlated it, each with the real `scenario_id` and
+   before/after values in `detail`.
+
+5. **Check detection coverage honestly.** http://127.0.0.1:3000/detection-coverage shows all 6
+   shipped rules; a rule only shows VALIDATED once a real Demo Control scenario run has actually
+   triggered it — run more scenarios (or `SCN-004` specifically, which is the only one currently
+   mapped to DET-003) to move rules out of NOT_TESTED.
+
+6. **Check deployment truthfulness.** http://127.0.0.1:3000/assurance reports real reachability
+   checks for every component and integration — anything not yet built (Wazuh, Splunk, an AI
+   analyst) reads `NOT_CONFIGURED`/`NOT ENABLED` rather than being hidden or faked.
+
+7. **Reset for the next walkthrough.** `make reset-demo` (see below) returns MissionNet, Sentinel,
+   and Demo Control's run history to a clean seeded baseline.
+
 ## Stop
 
 ```bash

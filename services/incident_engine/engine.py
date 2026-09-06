@@ -10,12 +10,15 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domain.audit import write_audit
+from domain.incidents import TERMINAL_INCIDENT_STATUSES
 from domain.models.orm import (
     Detection,
     DetectionEventLink,
     Incident,
     IncidentDetectionLink,
     IncidentEventLink,
+    NormalizedEventRecord,
 )
 from services.detection_engine.rules import RULES
 
@@ -49,7 +52,7 @@ async def _find_mergeable_incident(
     result = await session.execute(
         select(Incident)
         .where(Incident.correlation_key == correlation_key)
-        .where(Incident.status != "closed")
+        .where(Incident.status.not_in(TERMINAL_INCIDENT_STATUSES))
         .order_by(Incident.last_seen.desc())
     )
     for incident in result.scalars().all():
@@ -74,6 +77,18 @@ async def _link_detection_evidence(
             session.add(IncidentEventLink(incident_id=incident_id, event_id=event_id))
 
 
+async def _detection_scenario_id(session: AsyncSession, detection_id: str) -> str | None:
+    result = await session.execute(
+        select(NormalizedEventRecord.scenario_id)
+        .join(DetectionEventLink, DetectionEventLink.event_id == NormalizedEventRecord.event_id)
+        .where(DetectionEventLink.detection_id == detection_id)
+        .where(NormalizedEventRecord.scenario_id.is_not(None))
+        .limit(1)
+    )
+    row = result.first()
+    return row[0] if row else None
+
+
 async def run_incident_correlation(session: AsyncSession) -> IncidentRunResult:
     detections = await _unlinked_open_detections(session)
     created = updated = 0
@@ -85,6 +100,7 @@ async def run_incident_correlation(session: AsyncSession) -> IncidentRunResult:
         category = rule.category if rule else "uncategorized"
 
         incident = await _find_mergeable_incident(session, correlation_key, detection)
+        scenario_id = await _detection_scenario_id(session, detection.detection_id)
 
         if incident is not None:
             incident.severity = _max_severity(incident.severity, detection.severity)
@@ -93,6 +109,14 @@ async def run_incident_correlation(session: AsyncSession) -> IncidentRunResult:
                 set(incident.mitre_techniques) | set(detection.mitre_techniques)
             )
             await _link_detection_evidence(session, incident.incident_id, detection.detection_id)
+            await write_audit(
+                session,
+                entity_type="incident",
+                entity_id=incident.incident_id,
+                action="incident.detection_merged",
+                scenario_id=scenario_id,
+                detail={"detection_id": detection.detection_id, "rule_id": detection.rule_id},
+            )
             updated += 1
         else:
             incident_id = f"INC-{uuid4()}"
@@ -108,9 +132,22 @@ async def run_incident_correlation(session: AsyncSession) -> IncidentRunResult:
                     mitre_techniques=list(detection.mitre_techniques),
                     first_seen=detection.timestamp,
                     last_seen=detection.timestamp,
+                    scenario_id=scenario_id,
                 )
             )
             await _link_detection_evidence(session, incident_id, detection.detection_id)
+            await write_audit(
+                session,
+                entity_type="incident",
+                entity_id=incident_id,
+                action="incident.created",
+                scenario_id=scenario_id,
+                detail={
+                    "detection_id": detection.detection_id,
+                    "rule_id": detection.rule_id,
+                    "severity": detection.severity,
+                },
+            )
             created += 1
 
     await session.commit()

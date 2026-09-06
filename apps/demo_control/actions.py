@@ -2,6 +2,10 @@
 real HTTP call to MissionNet's public or lab-control API. There is no action here, or anywhere in
 this package, that writes to Sentinel or fabricates a MissionNet event - that is the whole point
 of the Scenario Controller's safety boundary (blueprint §17, Phase 3 continuation prompt §3).
+
+Every call also forwards `scenario_id` (injected into `parameters` by the runner before dispatch)
+so MissionNet's own audit trail - and, downstream, Sentinel's NormalizedEventRecord.scenario_id -
+carries genuine scenario provenance end to end, not just within Demo Control's own run record.
 """
 
 from collections.abc import Awaitable, Callable
@@ -39,13 +43,27 @@ async def _get(client: httpx.AsyncClient, path: str, **kwargs) -> dict:
 
 async def auth_failure(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
     return await _post(
-        client, "/identity/login", json={"username": target, "password": "wrong-on-purpose"}
+        client,
+        "/identity/login",
+        json={
+            "username": target,
+            "password": "wrong-on-purpose",
+            "scenario_id": parameters.get("scenario_id"),
+        },
     )
 
 
 async def auth_success(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
     password = parameters.get("password", "SynthLab#2026")
-    return await _post(client, "/identity/login", json={"username": target, "password": password})
+    return await _post(
+        client,
+        "/identity/login",
+        json={
+            "username": target,
+            "password": password,
+            "scenario_id": parameters.get("scenario_id"),
+        },
+    )
 
 
 async def degrade_asset(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
@@ -53,7 +71,10 @@ async def degrade_asset(client: httpx.AsyncClient, target: str, parameters: dict
         client,
         f"/lab/state/{target}/degrade",
         headers=_lab_headers(),
-        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+        json={
+            "reason": parameters.get("reason", "synthetic_lab_scenario"),
+            "scenario_id": parameters.get("scenario_id"),
+        },
     )
 
 
@@ -62,7 +83,10 @@ async def quarantine_asset(client: httpx.AsyncClient, target: str, parameters: d
         client,
         f"/lab/assets/{target}/quarantine",
         headers=_lab_headers(),
-        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+        json={
+            "reason": parameters.get("reason", "synthetic_lab_scenario"),
+            "scenario_id": parameters.get("scenario_id"),
+        },
     )
 
 
@@ -71,7 +95,10 @@ async def restore_asset(client: httpx.AsyncClient, target: str, parameters: dict
         client,
         f"/lab/assets/{target}/restore",
         headers=_lab_headers(),
-        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+        json={
+            "reason": parameters.get("reason", "synthetic_lab_scenario"),
+            "scenario_id": parameters.get("scenario_id"),
+        },
     )
 
 
@@ -80,7 +107,10 @@ async def revoke_token(client: httpx.AsyncClient, target: str, parameters: dict)
         client,
         f"/lab/tokens/{target}/revoke",
         headers=_lab_headers(),
-        json={"reason": parameters.get("reason", "synthetic_lab_scenario")},
+        json={
+            "reason": parameters.get("reason", "synthetic_lab_scenario"),
+            "scenario_id": parameters.get("scenario_id"),
+        },
     )
 
 
@@ -92,19 +122,26 @@ async def inject_telemetry(client: httpx.AsyncClient, target: str, parameters: d
         json={
             "battery": parameters.get("battery", 90),
             "link_quality": parameters.get("link_quality", 95),
+            "scenario_id": parameters.get("scenario_id"),
         },
     )
 
 
 async def access_record(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
     actor_user_id = parameters["actor_user_id"]
-    return await _get(
-        client, f"/mission-data/records/{target}", params={"actor_user_id": actor_user_id}
-    )
+    params = {"actor_user_id": actor_user_id}
+    if parameters.get("scenario_id"):
+        params["scenario_id"] = parameters["scenario_id"]
+    return await _get(client, f"/mission-data/records/{target}", params=params)
 
 
 async def snapshot_evidence(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
-    return await _post(client, "/lab/evidence/snapshot", headers=_lab_headers(), json={})
+    return await _post(
+        client,
+        "/lab/evidence/snapshot",
+        headers=_lab_headers(),
+        json={"scenario_id": parameters.get("scenario_id")},
+    )
 
 
 ActionFn = Callable[[httpx.AsyncClient, str, dict[str, Any]], Awaitable[dict]]

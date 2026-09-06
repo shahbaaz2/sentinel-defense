@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domain.audit import write_audit
 from domain.models.orm import Detection, DetectionEventLink, NormalizedEventRecord, SentinelAsset
 from services.detection_engine.rules import RULES, EventView, RuleCandidate
 
@@ -55,7 +56,7 @@ async def _load_asset_criticality(session: AsyncSession) -> dict[str, int]:
 
 
 async def _persist_candidate(
-    session: AsyncSession, rule, candidate: RuleCandidate
+    session: AsyncSession, rule, candidate: RuleCandidate, scenario_id: str | None
 ) -> bool:
     dedupe_key = _dedupe_key(rule.rule_id, candidate.event_ids)
     existing = await session.execute(select(Detection).where(Detection.dedupe_key == dedupe_key))
@@ -79,6 +80,18 @@ async def _persist_candidate(
     )
     for event_id in candidate.event_ids:
         session.add(DetectionEventLink(detection_id=detection_id, event_id=event_id))
+    await write_audit(
+        session,
+        entity_type="detection",
+        entity_id=detection_id,
+        action="detection.created",
+        scenario_id=scenario_id,
+        detail={
+            "rule_id": rule.rule_id,
+            "severity": candidate.severity,
+            "event_count": len(candidate.event_ids),
+        },
+    )
     return True
 
 
@@ -87,12 +100,21 @@ async def run_detection_engine(
 ) -> DetectionRunResult:
     events = await _load_recent_events(session, lookback)
     criticality = await _load_asset_criticality(session)
+    scenario_by_event = {e.event_id: e.scenario_id for e in events}
 
     created = skipped = 0
     for rule in RULES:
         candidates = rule.evaluate(events, criticality)
         for candidate in candidates:
-            if await _persist_candidate(session, rule, candidate):
+            scenario_id = next(
+                (
+                    scenario_by_event.get(eid)
+                    for eid in candidate.event_ids
+                    if scenario_by_event.get(eid)
+                ),
+                None,
+            )
+            if await _persist_candidate(session, rule, candidate, scenario_id):
                 created += 1
             else:
                 skipped += 1

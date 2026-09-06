@@ -83,6 +83,7 @@ async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)
             object_id=user.user_id if user else body.username,
             detail={},
             severity="info" if success else "low",
+            scenario_id=body.scenario_id,
         )
     )
     await session.commit()
@@ -102,6 +103,7 @@ async def list_records(session: AsyncSession = Depends(get_session)):
 async def get_record(
     record_id: str,
     actor_user_id: str = Query(..., description="Identity performing the access, for audit."),
+    scenario_id: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ):
     record = await session.get(MissionRecord, record_id)
@@ -118,6 +120,7 @@ async def get_record(
             object_id=record_id,
             detail={},
             severity="info",
+            scenario_id=scenario_id,
         )
     )
     await session.commit()

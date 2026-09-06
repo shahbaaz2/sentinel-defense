@@ -181,7 +181,8 @@ async def _execute(run_id: str, scenario: ScenarioDefinition) -> None:
 
             await _update_run(run_id, current_step=step.id)
             try:
-                response = await action_fn(mn_client, target, step.parameters)
+                parameters_with_provenance = {**step.parameters, "scenario_id": scenario.id}
+                response = await action_fn(mn_client, target, parameters_with_provenance)
                 step_results.append(
                     {
                         "step_id": step.id,
