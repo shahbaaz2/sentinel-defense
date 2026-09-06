@@ -21,6 +21,9 @@ LAB_HEADERS = {"X-Lab-Secret": settings.lab_secret}
 async def _reset_baseline():
     await reset_and_seed()
     yield
+    # This suite shares one live Postgres with every other test file (no per-test transaction
+    # rollback), so the last test here must not leave MissionNet mutated for tests that run after.
+    await reset_and_seed()
 
 
 async def _client() -> AsyncClient:

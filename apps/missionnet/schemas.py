@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AssetOut(BaseModel):
@@ -80,6 +80,17 @@ class AuditEventOut(BaseModel):
     classification: str
 
     model_config = {"from_attributes": True}
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(max_length=256)
+    password: str = Field(max_length=256)
+
+
+class LoginResponse(BaseModel):
+    success: bool
+    user_id: str | None = None
+    reason: str | None = None
 
 
 class SystemStateOut(BaseModel):

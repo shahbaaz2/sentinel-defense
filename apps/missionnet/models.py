@@ -45,6 +45,10 @@ class IdentityUser(Base):
     """One of: human, service_account."""
     status: Mapped[str] = mapped_column(default="active")
     """One of: active, suspended."""
+    synthetic_password: Mapped[str] = mapped_column(default="SynthLab#2026")
+    """Plaintext by design: this is a fictional identity in a synthetic lab, not a real
+    credential. Exists so MissionNet can produce genuine auth.success/auth.failure events for
+    Sentinel to detect - never treat as a real secret or apply real password-handling practices."""
     classification: Mapped[str] = mapped_column(default="SYNTHETIC")
 
     tokens: Mapped[list["ServiceToken"]] = relationship(back_populates="owner")

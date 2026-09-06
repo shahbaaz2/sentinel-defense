@@ -54,15 +54,18 @@ Then open:
 - MissionNet Operations Console: http://127.0.0.1:3100
 - Sentinel API docs: http://127.0.0.1:8080/docs
 
+To see Sentinel actually detect something, run `make ingest-once` after causing a real MissionNet
+signal — see [RUNBOOK.md](RUNBOOK.md#create-a-phase-2-test-event-and-verify-detectionincident).
+
 ## Feature matrix (updated as phases land)
 
 | Capability | Status |
 |---|---|
 | Repo scaffold, health endpoint, shells | **Phase 0 — done and verified** |
 | MissionNet real synthetic app | **Phase 1 — done and verified** |
-| Normalized events, deterministic detection, incidents | Phase 2 — not started |
+| Normalized events, deterministic detection, incidents | **Phase 2 — done and verified** |
 | Demo Control / SCN-010 scenario | Phase 3 — not started |
-| Sentinel dashboard (posture/incidents/investigation) | Phase 4 — not started |
+| Sentinel dashboard (posture/incidents/investigation) | Overview + Incidents + Incident Detail done in Phase 2; polish/SSE pending |
 | Local MLX AI analyst + RAG | Phase 5 — not started |
 | Playbooks, policy engine, approvals | Phase 6 — not started |
 | Deterministic response + verification + rollback | Phase 7 — not started |
@@ -78,4 +81,7 @@ See [PROGRESS.md](PROGRESS.md) for exactly what currently works and what was act
 - [DECISIONS.md](DECISIONS.md) — ADR-style decisions with rationale.
 - [RUNBOOK.md](RUNBOOK.md) — start/stop/reset/troubleshooting/offline instructions.
 - [SECURITY.md](SECURITY.md) — synthetic-only scope and prohibited uses.
-- `docs/data-contracts.md`, `docs/playbooks.md`, `docs/demo.md` — added as those phases land.
+- [docs/data-contracts.md](docs/data-contracts.md) — current schema definitions (MissionNet + Sentinel).
+- [docs/detection-engine.md](docs/detection-engine.md) — how the 6 deterministic lab rules work.
+- [docs/incident-correlation.md](docs/incident-correlation.md) — how detections become incidents.
+- `docs/playbooks.md`, `docs/demo.md` — added as those phases land.

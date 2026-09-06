@@ -84,6 +84,78 @@ box. Also removed `"credsStore": "desktop"` from `~/.docker/config.json` (backed
 Colima and broke anonymous image pulls. This project never needs private-registry auth, so no
 credential helper is required at all.
 
+## 2026-09-06 — Phase 2: MissionNet adapter polls its public API over real HTTP, not the database
+
+`integrations/missionnet/adapter.py` calls MissionNet's own `GET /audit` and `GET /telemetry`
+(extended with `?since=<ISO8601>&limit=<n>` ascending-order polling specifically for this) rather
+than querying MissionNet's Postgres tables directly. This is deliberate, not just convenient:
+Sentinel must observe MissionNet the same way a real external SIEM/XDR would observe a monitored
+system - through its API - so the two systems stay genuinely decoupled and the causal chain (Demo
+Control → MissionNet → telemetry → Sentinel ingest) is real, not a database-level shortcut.
+`EventSourceAdapter` (`services/event_ingestor/ports.py`) is the vendor-neutral Protocol; Wazuh/
+Splunk/Suricata/Zeek/Falco adapters (Phase 8) implement the same interface with zero changes to
+ingestion, detection, or correlation code.
+
+## 2026-09-06 — Ingestion cursor and idempotency design
+
+One `ingestion_cursors` row per `(source, stream)` stores a `last_timestamp` watermark. Each poll
+passes it as `since`; MissionNet returns only newer rows, ascending. Idempotency is enforced twice,
+independently: (1) `normalized_events` has a unique constraint on `(source, source_event_id)` and
+the ingestion service checks-then-skips before inserting, and (2) `raw_events` primary key is
+`f"{source}-{stream}-{source_event_id}"`, so re-ingesting the same MissionNet row is a no-op even if
+the cursor were somehow rewound. Verified in
+`tests/integration/test_sentinel_ingestion_pipeline.py::test_repeated_ingestion_is_idempotent_...`.
+
+**Gotcha worth recording so it isn't rediscovered:** `RawEvent` and `NormalizedEventRecord` have a
+plain FK column (`normalized_events.raw_event_ref -> raw_events.raw_event_id`) but no declared ORM
+`relationship()` between them. SQLAlchemy's unit-of-work does **not** infer insert ordering across
+mappers from a bare FK column - only from `relationship()`-derived dependency edges - so a single
+flush containing both new `RawEvent` and new `NormalizedEventRecord` objects can (and, empirically,
+did) attempt the child insert before the parent, tripping the FK constraint. Fixed by ingesting in
+two explicit passes: add and flush every needed `RawEvent` first, then add every
+`NormalizedEventRecord`. If a future change reintroduces "add both, then flush once," this bug comes
+back - either keep the two-pass structure or add a real `relationship()`.
+
+## 2026-09-06 — Detection rules are plain Python, not Sigma, for Phase 2
+
+See `docs/detection-engine.md` for full rationale. Summary: the `Rule` dataclass shape mirrors what
+a Sigma-backed rule would need (id/name/version/severity/category/mitre_techniques/evaluate), so
+adopting Sigma in Phase 8 is an adapter, not a redesign. Every rule is a pure function over
+`EventView` objects with no DB access, which is what makes 13 rule-engine unit tests possible with
+zero database fixtures.
+
+## 2026-09-06 — Incident correlation groups by `correlation_key` (asset OR identity), not asset alone
+
+Blueprint §9 groups by "same asset" and "same identity" as separate correlation rules. Rather than
+two parallel grouping mechanisms, both `Detection` and `Incident` carry one `correlation_key` column
+that the triggering rule populates as `asset_id or user_id`. This lets identity-centric rules
+(DET-001, DET-003, DET-006) and asset-centric rules (DET-002, DET-004, DET-005) share one merge
+algorithm (`services/incident_engine/engine.py`) instead of needing two. Full detail and known
+limitations in `docs/incident-correlation.md`.
+
+## 2026-09-06 — Why no AI anywhere in Phase 2
+
+Every decision in this phase - whether an event matches a rule, whether two detections correlate
+into one incident - is made by plain, tested, deterministic code with no model in the loop. This
+isn't a temporary simplification to revisit later; it's the architectural point of separating the
+DETECTION PLANE from the AI PLANE (blueprint §2). Phase 5 adds a local LLM that receives an evidence
+packet built from exactly the data this phase produces (`normalized_events`, `detections`,
+`incidents`) and returns a schema-validated *assessment* - it will never decide whether a detection
+or incident *exists*. The dashboard's "AI Analyst: NOT ENABLED — scheduled for a later phase" label
+on every incident page is intentionally visible now so the architecture reads as honest at every
+phase, not just at the end.
+
+## 2026-09-06 — Extended MissionNet with genuine `auth.*` and `record.access` signals for Phase 2
+
+Four of the six lab detection rules need signals MissionNet didn't produce after Phase 1
+(authentication events, mission-record access events). Rather than fabricate these inside Sentinel
+(explicitly prohibited - Sentinel must only detect what actually happened), added a real, minimal
+`POST /identity/login` and `GET /mission-data/records/{id}?actor_user_id=...` to MissionNet's own
+public API, each writing a genuine `audit_events` row. This closes a Phase 1 gap against the
+blueprint's own spec (§7.1: Identity Service should have "login/logout/token events") rather than
+inventing new scope. `IdentityUser.synthetic_password` is plaintext by design - a fictional
+credential in a synthetic lab, not a real secret, so normal password-handling practices don't apply.
+
 ## 2026-09-06 — MissionNet DB engine uses NullPool
 
 `create_async_engine`'s default pooled connections stay bound to whichever asyncio event loop first

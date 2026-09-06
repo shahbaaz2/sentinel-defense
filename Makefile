@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev-up dev-down api dashboard missionnet missionnet-console mlx test lint scenario health reset-lab offline-check migrate-missionnet
+.PHONY: bootstrap dev-up dev-down api dashboard missionnet missionnet-console mlx test lint scenario health reset-lab offline-check migrate-missionnet migrate-sentinel ingest-once ingest-watch sentinel-reset
 
 VENV := .venv/bin
 
@@ -47,6 +47,18 @@ reset-lab:
 
 migrate-missionnet:
 	$(VENV)/alembic -c infrastructure/migrations/missionnet/alembic.ini upgrade head
+
+migrate-sentinel:
+	$(VENV)/alembic -c infrastructure/migrations/sentinel/alembic.ini upgrade head
+
+ingest-once:
+	$(VENV)/python -m services.event_ingestor.cli run-once
+
+ingest-watch:
+	$(VENV)/python -m services.event_ingestor.cli run-watch
+
+sentinel-reset:
+	$(VENV)/python -m services.event_ingestor.reset
 
 offline-check:
 	bash scripts/offline-check.sh

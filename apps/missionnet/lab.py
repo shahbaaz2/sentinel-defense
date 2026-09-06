@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.missionnet.config import settings
 from apps.missionnet.db import get_session
-from apps.missionnet.models import Asset, AuditEvent, ServiceToken
+from apps.missionnet.models import Asset, AuditEvent, ServiceToken, TelemetrySample
 from apps.missionnet.seed import reset_and_seed
 from apps.missionnet.state import compute_system_state
 
@@ -102,7 +102,15 @@ async def revoke_token(
         raise HTTPException(status_code=404, detail="token not in synthetic inventory")
     token.valid = False
     token.revoked_at = datetime.now(UTC)
-    await _write_audit(session, ctx, "token.revoke", "service_token", token_id, severity="high")
+    await _write_audit(
+        session,
+        ctx,
+        "token.revoke",
+        "service_token",
+        token_id,
+        severity="high",
+        detail={"reason": ctx.reason, "owner_user_id": token.owner_user_id},
+    )
     await session.commit()
     return {"token_id": token_id, "valid": token.valid}
 
@@ -137,6 +145,54 @@ async def restore_asset(
     await _write_audit(session, ctx, "asset.restore", "asset", asset_id, severity="info")
     await session.commit()
     return {"asset_id": asset_id, "status": asset.status, "network_state": asset.network_state}
+
+
+class TelemetryInjection(ScenarioContext):
+    """Controlled synthetic telemetry sample for testing detection rules (e.g. low battery /
+    poor link quality). Not exposed to the LLM; used by lab operators and the Demo Control Plane."""
+
+    battery: int = Field(default=90, ge=0, le=100)
+    link_quality: int = Field(default=95, ge=0, le=100)
+    latitude: float | None = Field(default=None)
+    longitude: float | None = Field(default=None)
+
+
+@router.post("/telemetry/{asset_id}/inject")
+async def inject_telemetry(
+    asset_id: str,
+    sample: TelemetryInjection = TelemetryInjection(),
+    session: AsyncSession = Depends(get_session),
+):
+    asset = await session.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not in synthetic inventory")
+
+    sample_id = str(uuid.uuid4())
+    session.add(
+        TelemetrySample(
+            sample_id=sample_id,
+            asset_id=asset_id,
+            battery=sample.battery,
+            link_quality=sample.link_quality,
+            latitude=sample.latitude,
+            longitude=sample.longitude,
+        )
+    )
+    await _write_audit(
+        session,
+        sample,
+        "telemetry.inject",
+        "asset",
+        asset_id,
+        severity="info",
+        detail={
+            "sample_id": sample_id,
+            "battery": sample.battery,
+            "link_quality": sample.link_quality,
+        },
+    )
+    await session.commit()
+    return {"sample_id": sample_id, "asset_id": asset_id}
 
 
 @router.post("/evidence/snapshot")

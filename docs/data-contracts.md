@@ -57,9 +57,50 @@ executor (Phase 7) and the Demo Control Plane (Phase 3), never exposed to the LL
 applicable, a `scenario_id` — this is what lets Sentinel later distinguish "the scenario caused this"
 from "our own response caused this."
 
-## Sentinel API (`apps/api/main.py`)
+## Sentinel's own persistence (`domain/models/orm.py`, Phase 2)
+
+Own Postgres database (`sentinel`), migrated via `infrastructure/migrations/sentinel` (Alembic).
+Distinct from both the canonical `NormalizedEvent` Pydantic contract and MissionNet's schema.
+
+| Table | Purpose | Key fields |
+|---|---|---|
+| `raw_events` | Untouched source payload | `raw_event_id`, `source`, `payload` (JSON), `sha256` |
+| `assets` | Sentinel's own synced view of protected assets | `id` (`source:external_id`), `external_asset_id`, `source`, `criticality`, `status` |
+| `normalized_events` | Persisted `NormalizedEvent` + ingestion-only fields | `event_id`, `event_type`, `correlation_key`, `raw_event_ref` (FK → `raw_events`) |
+| `detections` | One deterministic rule firing | `detection_id`, `rule_id`/`rule_version`, `severity`, `correlation_key`, `dedupe_key` (idempotency) |
+| `detection_event_links` | Detection → evidence events (relational, not JSON) | `detection_id`, `event_id` |
+| `incidents` | Correlated case | `incident_id`, `status` (blueprint §9.4 values; Phase 2 only produces `new`), `correlation_key`, `category` |
+| `incident_detection_links` / `incident_event_links` | Incident → evidence (relational) | composite PKs |
+| `ingestion_cursors` | Per-`(source, stream)` polling watermark | `source`, `stream`, `last_timestamp` |
+
+`correlation_key` on both `detections` and `incidents` is `asset_id` when the triggering rule is
+asset-centric, else `user_id` - see `docs/incident-correlation.md`.
+
+## Event source adapter boundary (`services/event_ingestor/ports.py`)
+
+```python
+class EventSourceAdapter(Protocol):
+    async def fetch_events(self, *, since: datetime | None = None, cursor: str | None = None) -> EventBatch: ...
+```
+
+`integrations/missionnet/adapter.py` is the first (and so far only) implementation, as two adapter
+instances - one per MissionNet stream (`audit`, `telemetry`) - each with its own cursor row. Future
+sources (Wazuh, Splunk, Suricata, Zeek, Falco - Phase 8) implement the same Protocol; nothing in
+`services/event_ingestor`, `services/detection_engine`, or `services/incident_engine` is MissionNet-
+specific.
+
+`integrations/missionnet/mapper.py` does SOURCE EVENT → NORMALIZER → CANONICAL EVENT: every
+MissionNet audit `action` and the telemetry stream map to one explicit, tested
+`(event_category, event_type, severity)`. See `docs/detection-engine.md` for the rules that consume
+these events, and `docs/incident-correlation.md` for how detections become incidents.
+
+## Sentinel API (`apps/api/main.py`, `apps/api/routes.py`)
 
 `GET /api/v1/health`, `/api/v1/system/profile`, `/api/v1/system/assurance` (Deployment Assurance
-panel data - inference location, external AI status, model, knowledge/policy bundle). Sentinel's own
-database schema (assets/events/detections/incidents/ai_assessments/playbooks/approvals/executions/
-audit_log per blueprint §10) is built starting Phase 2.
+panel data). Phase 2 adds: `/api/v1/assets`, `/api/v1/assets/{id}`, `/api/v1/events` (filterable by
+`severity`/`source`/`asset_id`/`since`/`until`), `/api/v1/events/{id}`, `/api/v1/detections`
+(filterable by `severity`/`status`/`asset_id`), `/api/v1/detections/{id}`, `/api/v1/incidents`
+(filterable by `severity`/`status`/`asset_id`), `/api/v1/incidents/{id}` (includes full evidence:
+linked detections and their event IDs), `/api/v1/metrics/summary` (dashboard overview data).
+`ai_assessments`/`playbooks`/`approvals`/`executions`/`audit_log` (blueprint §10) are built starting
+Phase 5/6/7.

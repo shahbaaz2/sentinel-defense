@@ -18,5 +18,6 @@ if [ ! -x "$REPO_ROOT/.venv/bin/python" ]; then
 fi
 
 "$REPO_ROOT/.venv/bin/python" -m apps.missionnet.seed --reset
+"$REPO_ROOT/.venv/bin/python" -m services.event_ingestor.reset
 
 echo "reset-lab complete."

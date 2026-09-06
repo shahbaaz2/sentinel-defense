@@ -36,6 +36,7 @@ check "Sentinel dashboard reachable" "curl -fsS http://127.0.0.1:3000" 0
 check "MissionNet health" "curl -fsS http://${MISSIONNET_HOST}:${MISSIONNET_PORT}/health" 1
 check "MissionNet dashboard reachable" "curl -fsS http://127.0.0.1:3100" 0
 check "MissionNet DB migration applied" "docker exec sentinel-postgres psql -U missionnet -d missionnet -tAc \"select 1 from alembic_version\"" 1
+check "Sentinel DB migration applied" "docker exec sentinel-postgres psql -U sentinel -d sentinel -tAc \"select 1 from alembic_version\"" 1
 check "Local model endpoint" "curl -fsS ${SENTINEL_LLM_BASE_URL:-http://127.0.0.1:8000/v1}/models" 0
 check "Knowledge bundle present" "[ -n \"${SENTINEL_KNOWLEDGE_BUNDLE:-}\" ]" 0
 check "Policy bundle present" "[ -n \"${SENTINEL_POLICY_BUNDLE:-}\" ]" 0
