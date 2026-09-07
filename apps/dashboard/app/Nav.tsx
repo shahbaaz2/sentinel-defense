@@ -4,6 +4,7 @@ const SECTIONS = [
   { href: "/", label: "Overview" },
   { href: "/incidents", label: "Incidents" },
   { href: "/assets", label: "Assets" },
+  { href: "/response-center", label: "Response Center" },
   { href: "/detection-coverage", label: "Detection Coverage" },
   { href: "/events", label: "Event Explorer" },
   { href: "/audit", label: "Audit / Provenance" },

@@ -13,6 +13,7 @@ from apps.api.ai_routes import get_llm_provider
 from apps.api.config import settings
 from apps.api.schemas import IntegrationStatusOut, SystemAssuranceOut
 from domain.db import get_session
+from services.policy_engine.engine import POLICY_BUNDLE_VERSION
 
 router = APIRouter(prefix="/api/v1")
 
@@ -70,7 +71,7 @@ async def system_assurance(
         model=settings.llm_model,
         model_provider=settings.llm_provider,
         knowledge_bundle=settings.knowledge_bundle,
-        policy_bundle=settings.policy_bundle,
+        policy_bundle=POLICY_BUNDLE_VERSION,
         synthetic_only=settings.synthetic_only,
         missionnet_adapter="ONLINE" if missionnet_ok else "OFFLINE",
         sentinel_api="ONLINE",

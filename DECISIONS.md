@@ -4,6 +4,114 @@ ADR-style log of durable engineering decisions. Newest first. Each entry: date, 
 
 ---
 
+## 2026-09-06 — Phase 6: `allowed_asset_types` matches MissionNet's `mission_role`, not Sentinel's
+`asset_type`
+
+The blueprint's example playbook schema uses `allowed_asset_types: [telemetry_gateway]`, implying
+Sentinel's own `SentinelAsset.asset_type` column as the discriminator. But every asset MissionNet
+seeds has `asset_type == "service"` (`apps/missionnet/seed.py`) - that column can never distinguish
+one playbook's eligible assets from another's in this deployment. The field that actually varies is
+MissionNet's own `mission_role` (`identity`/`gateway`/`data`/`edge`), already carried through to
+Sentinel as `SentinelAsset.extra["mission_role"]` since Phase 2. `services/ai_analyst/evidence.py::
+EvidenceAsset` gained a `mission_role` field for this reason, and `services/policy_engine/engine.py`
+matches `allowed_asset_types` against it, not `asset_type`. The YAML field keeps its blueprint name
+for fidelity to the spec's shape; only its *values* and the column they're checked against changed -
+documented here so nobody "fixes" it back to `asset_type` and silently makes every asset-scoped
+playbook match every asset.
+
+## 2026-09-06 — Phase 6: RP-005 eligibility is detection count, not incident category
+
+`services/incident_engine/engine.py` sets an incident's `category` once, at creation, from
+whichever detection happened to arrive first - it's never updated when later detections merge into
+the same incident (only severity/last_seen/mitre_techniques are). This means a genuinely
+multi-signal incident (SCN-010's flagship: DET-002 + DET-004 + DET-005, all on one asset) ends up
+with a single-detection-looking `category` like `"asset-degradation"`, not anything that says
+"multi-signal." Rather than add a new incident-engine feature to compute a real "multi-signal"
+category (out of scope for a Phase 6 response-planning task, and a change to already-shipped,
+tested Phase 2 behavior), RP-005 lists every category a multi-signal incident could plausibly carry
+*and* requires `minimum_detection_count: 2` (`PlaybookDefinition.minimum_detection_count`,
+`services/policy_engine/engine.py`'s own check). This correctly makes RP-005 eligible exactly when
+an incident has multiple correlated detections, independent of which category label it happened to
+land on - verified live: the SCN-010 flagship incident shows both RP-003 and RP-005 as eligible, and
+the real local AI model recommended RP-005 for it unprompted.
+
+## 2026-09-06 — Phase 6: policy bundle version moved from `settings.policy_bundle` to code
+
+`apps/api/config.py` previously had a placeholder `policy_bundle: str = "PB-local-dev"` field, set
+before any real policy engine existed. Now that `services/policy_engine/engine.py` implements real,
+versioned rules, `POLICY_BUNDLE_VERSION = "PB-001"` was moved into that module as a plain constant
+and the `settings.policy_bundle` field (plus `SENTINEL_POLICY_BUNDLE` in `.env`/`.env.example`) was
+removed entirely, rather than kept as parallel, driftable configuration. A policy bundle version
+describes which deterministic rules are *actually loaded in this process* - that can only be true
+of a value in the code implementing those rules, never a string in an env file that could disagree
+with it. `scripts/healthcheck.sh`'s old "Policy bundle present" check (which tested the now-removed
+env var) was replaced with "Playbook catalog loads (5 playbooks)" - a check against real, observable
+behavior instead of a config string's mere presence. `knowledge_bundle` stays a settings placeholder,
+deliberately, since no real knowledge bundle exists until RAG is built.
+
+## 2026-09-06 — Phase 6: a `ResponsePlan` row's mere existence already proves it passed policy
+
+`services/policy_engine/service.py::create_response_plan` evaluates policy *before* ever
+constructing a `ResponsePlan` object - if `evaluate_policy` returns `allowed=False`, the function
+writes one audit entry (`response_plan.policy_evaluated`, so the attempt itself has provenance) and
+returns `(None, decision)` without touching the `response_plans` table at all. This means there is
+no `ResponsePlan` row anywhere in the database, ever, whose policy was `DENY` - a query for "how many
+denied plans exist" is always zero by construction, not by convention. The alternative (persist
+every attempt, including denied ones, with a `DENIED` status) was considered and rejected: it would
+mean every reader of `response_plans` needs to remember to filter by policy outcome, whereas "a row
+exists" being sufficient proof of eligibility is a stronger, harder-to-misuse invariant. Denied
+attempts are still fully auditable via `audit_log`, just not via a table row.
+
+## 2026-09-06 — Phase 6: `DRAFT`/`POLICY_REVIEW` are vocabulary-only; policy evaluation is
+synchronous
+
+The blueprint's approval lifecycle names `DRAFT -> POLICY_REVIEW -> AWAITING_APPROVAL -> APPROVED/
+REJECTED`, suggesting policy evaluation might be a distinct, observable step. In this phase it is
+synchronous - `create_response_plan` evaluates policy and, if allowed, persists straight into
+`AWAITING_APPROVAL` in the same function call, in the same transaction as the policy-evaluated audit
+entry. There is no `DRAFT` state a plan sits in while awaiting evaluation, and no `POLICY_REVIEW`
+state to poll. Both remain valid values in `ResponsePlanStatus`/the `status` column's vocabulary
+(for schema/API forward-compatibility, and in case a future phase makes evaluation asynchronous -
+e.g. if it starts depending on a slow external check) but no code path in this phase ever sets a
+plan to either. Similarly, `EXPIRED` is a defined, valid status with no TTL/timeout mechanism behind
+it yet - reserved, not implemented.
+
+## 2026-09-06 — Phase 6: no separate `approval_status` column - `status` is the single source of
+truth
+
+The blueprint's suggested `ResponsePlan` fields list both `status` and `approval_status` as
+separate columns. `domain/models/orm.py::ResponsePlan` implements only `status` (one of
+DRAFT/AWAITING_APPROVAL/APPROVED/REJECTED/CANCELLED/EXPIRED) - a plan's approval state and its
+overall lifecycle state are the same thing in Phase 6 (there is no state a plan can be in that's
+"approved" but not "AWAITING_APPROVAL -> APPROVED", since execution doesn't exist to have its own
+separate status track yet). Keeping two columns that would always need to agree is exactly the kind
+of duplicate-source-of-truth bug this project actively avoids elsewhere (see the incident-status /
+`TERMINAL_INCIDENT_STATUSES` shared-constant decision). Revisit if a later phase's execution status
+genuinely needs to diverge from approval status (e.g. an approved-but-failed-to-execute plan).
+
+## 2026-09-06 — Phase 6: AI Analyst's evidence pack now computes real playbook eligibility
+
+`services/ai_analyst/evidence.py::build_evidence_pack` imports `services.policy_engine.engine::
+compute_eligible_playbook_ids` (lazily, inside the function, to avoid a module-level import cycle -
+`policy_engine.engine` itself takes an `EvidencePack` as input, so it must be able to import
+`ai_analyst.evidence`'s types first). This is the only cross-package dependency in either direction:
+`policy_engine` never imports anything from `ai_analyst` or `ai/` at module scope, keeping the
+policy engine's "never touches the AI" guarantee (`docs/policy-engine.md`) intentionally easy to
+verify by grep, not just by reading control flow.
+
+## 2026-09-06 — Existing Phase 4/5 assurance tests already covered this correctly; no regressions
+introduced
+
+Phase 6 added five new `SystemAssuranceOut` fields (`response_planning`, `policy_engine`,
+`human_approval`, `response_execution`, `autonomous_response`) with fixed defaults matching the
+blueprint's required literal strings exactly (`"ENABLED"`, `"OPERATIONAL"`, `"DISABLED - NEXT
+PHASE"`, etc.) - these are not computed from any live check, unlike `ai_analyst_status`, because
+there is nothing to truthfully *check* yet (no execution engine, no autonomous-agent code path to
+query the state of). This is consistent with `response_authority: "NONE"` already being a fixed
+Phase 5 default rather than a computed value, for the same reason: a field can only be "truthfully
+computed" once the thing it describes exists to observe.
+
+
 ## 2026-09-06 — Phase 5: MLX loads in-process, not as a separate `mlx_lm.server` sidecar
 
 `ai/providers/mlx_provider.py::MLXProvider` calls `mlx_lm.load()`/`mlx_lm.generate()` directly

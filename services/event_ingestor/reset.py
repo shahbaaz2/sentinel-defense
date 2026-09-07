@@ -20,10 +20,15 @@ from domain.models.orm import (
     IngestionCursor,
     NormalizedEventRecord,
     RawEvent,
+    ResponsePlan,
     SentinelAsset,
 )
 
 _DELETE_ORDER = (
+    # ResponsePlan FKs into both AIAssessment and Incident - must precede them both. Whenever a
+    # new table gets a foreign key into incidents/detections/normalized_events/ai_assessments,
+    # add it here BEFORE its target - this has been a real, recurring bug (see DECISIONS.md).
+    ResponsePlan,
     AIAssessment,
     IncidentNote,
     IncidentEventLink,

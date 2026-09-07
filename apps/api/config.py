@@ -22,7 +22,11 @@ class Settings(BaseSettings):
 
     response_mode: str = "assisted"
     knowledge_bundle: str = "KB-local-dev"
-    policy_bundle: str = "PB-local-dev"
+    """Phase 6: real policy versioning lives in code (`services/policy_engine/engine.py::
+    POLICY_BUNDLE_VERSION`), not settings, since it describes which deterministic rules are loaded,
+    not a deployment-time option - see DECISIONS.md. `knowledge_bundle` stays a placeholder string
+    here since no real knowledge bundle exists yet (RAG remains NOT ENABLED, deferred beyond
+    Phase 6 - see System Assurance)."""
     synthetic_only: bool = True
 
     api_host: str = "127.0.0.1"

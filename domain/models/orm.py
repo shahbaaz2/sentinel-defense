@@ -252,6 +252,59 @@ class AIAssessment(Base):
     scenario_id: Mapped[str | None] = mapped_column(default=None)
 
 
+class ResponsePlan(Base):
+    """A proposed, policy-evaluated, human-reviewable response to one incident (Phase 6). Recording
+    "what WOULD be executed" - `execution_status` is hardcoded EXECUTION_NOT_ENABLED everywhere in
+    this codebase; no code path in this phase ever sets it to anything else. Only ever created when
+    `services/policy_engine/engine.py::evaluate_policy` already returned `allowed=True` for this
+    exact (playbook, incident) pair - a denied policy decision never produces a row here, so every
+    row's mere existence already proves it passed policy. Append-only in spirit: status transitions
+    (approve/reject/cancel) update the same row rather than creating new ones, since a response plan
+    - unlike an AI assessment - has exactly one lifecycle, not a history of independent attempts."""
+
+    __tablename__ = "response_plans"
+
+    response_plan_id: Mapped[str] = mapped_column(primary_key=True)
+    incident_id: Mapped[str] = mapped_column(ForeignKey("incidents.incident_id"))
+    playbook_id: Mapped[str]
+    playbook_version: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str]
+    recommendation_source: Mapped[str]
+    """"ai" or "analyst" - which one chose this playbook_id. Never affects policy evaluation."""
+    ai_assessment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_assessments.assessment_id"), default=None
+    )
+
+    policy_bundle_version: Mapped[str]
+    policy_decision: Mapped[str]
+    """Always "ALLOW" in practice - see class docstring. Stored anyway so a row is self-describing
+    without joining back to code that may have changed since."""
+    policy_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    risk_level: Mapped[str]
+    """Copied from the playbook's `risk.mission_impact` at creation time."""
+    reversible: Mapped[bool]
+
+    status: Mapped[str] = mapped_column(default="AWAITING_APPROVAL")
+    """One of: DRAFT, AWAITING_APPROVAL, APPROVED, REJECTED, CANCELLED, EXPIRED. POLICY_REVIEW is
+    part of the vocabulary (blueprint §11) but never persisted in Phase 6 - policy evaluation is
+    synchronous, so a plan is only ever written to this table already past that step (or not
+    written at all, if policy denied it) - see DECISIONS.md."""
+    approved_by: Mapped[str | None] = mapped_column(default=None)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    rejected_by: Mapped[str | None] = mapped_column(default=None)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    rejection_reason: Mapped[str | None] = mapped_column(default=None)
+    cancelled_by: Mapped[str | None] = mapped_column(default=None)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    scenario_id: Mapped[str | None] = mapped_column(default=None)
+    execution_status: Mapped[str] = mapped_column(default="EXECUTION_NOT_ENABLED")
+    """Always "EXECUTION_NOT_ENABLED" in Phase 6 - no executor exists yet. Never "NOT_EXECUTED",
+    which would imply an executor existed and chose not to run; that phase comes later."""
+
+
 class IngestionCursor(Base):
     """One row per (source, stream) - e.g. ('missionnet', 'audit') - tracking the polling
     watermark so ingestion is resumable and never reprocesses the same window from scratch."""

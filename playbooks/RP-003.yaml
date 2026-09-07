@@ -1,0 +1,37 @@
+id: RP-003
+version: "1.0"
+name: Critical Mission Asset Containment
+description: >
+  Bounded response plan for a mission-critical MissionNet service showing
+  unexpected degradation (DET-002). Quarantines the affected workload, requests
+  a replacement instance, verifies health, and preserves evidence.
+enabled: true
+allowed_asset_types:
+  - data
+  - gateway
+  - identity
+allowed_incident_categories:
+  - asset-degradation
+minimum_incident_severity:
+  - high
+requires_human_approval: true
+reversible: true
+actions:
+  - action_id: quarantine_workload
+    target_source: incident_asset
+  - action_id: request_replacement_instance
+    target_source: incident_asset
+  - action_id: verify_service_health
+    target_source: incident_asset
+  - action_id: preserve_evidence
+    target_source: incident
+verification:
+  - workload_isolated
+  - replacement_provisioned
+  - service_healthy
+  - evidence_snapshot_created
+rollback:
+  - restore_workload_network
+risk:
+  mission_impact: high
+  reversibility: medium

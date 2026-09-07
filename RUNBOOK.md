@@ -184,6 +184,64 @@ Evaluation harness (14 hand-built cases, schema/hallucination/latency metrics):
 .venv/bin/python -m evaluation.llm.run_eval --provider mock     # fast plumbing smoke test
 ```
 
+## Response planning: playbooks, policy, and approval (Phase 6)
+
+Playbooks, the policy engine, and response plans work identically whether or not the AI Analyst is
+enabled - see `docs/response-playbooks.md`, `docs/policy-engine.md`, and `docs/human-approval.md`
+for the full design.
+
+1. **List the playbook catalog.**
+   ```bash
+   curl -s http://127.0.0.1:8080/api/v1/playbooks | python3 -m json.tool
+   ```
+   Five playbooks ship by default: RP-001 (auth abuse), RP-002 (service credential protection),
+   RP-003 (critical asset containment), RP-004 (sensitive record access), RP-005 (multi-signal
+   containment - eligible whenever an incident has 2+ correlated detections).
+
+2. **Run SCN-010** (see "Run a scenario through Demo Control" above) and open the resulting
+   asset-degradation incident (`DET-002+DET-004+DET-005` correlated) in the dashboard - both RP-003
+   and RP-005 should show as eligible.
+
+3. **Analyze the incident** (with AI enabled - see "Local AI Analyst" above) and check its
+   `recommended_playbook_id` - the SCN-010 flagship consistently recommends RP-005. The Incident
+   Detail page's **Response Planning** section shows this automatically, pre-selected.
+
+4. **Create a response plan.** Either click **CREATE RESPONSE PLAN** on the Incident Detail page,
+   or:
+   ```bash
+   curl -s -X POST -H "Content-Type: application/json" \
+     -d '{"playbook_id":"RP-005","actor":"j.analyst","recommendation_source":"analyst"}' \
+     http://127.0.0.1:8080/api/v1/incidents/<incident_id>/response-plan | python3 -m json.tool
+   ```
+   A 422 response means policy denied it - the body's `blocking_reasons` says exactly why, and no
+   plan is created.
+
+5. **Review policy checks.** Every plan's `policy_reasons` (and, before creating one,
+   `GET /api/v1/incidents/<incident_id>/policy-check/<playbook_id>`) shows every rule that was
+   evaluated - not just the ones that mattered.
+
+6. **Approve or reject.** On the plan's own page (`/response-plans/<id>`) or via API:
+   ```bash
+   curl -s -X POST -H "Content-Type: application/json" -d '{"actor":"j.analyst"}' \
+     http://127.0.0.1:8080/api/v1/response-plans/<plan_id>/approve
+   ```
+   The page shows **APPROVED — EXECUTION NOT ENABLED IN PHASE 6** afterward - nothing runs.
+   Re-approving, or approving a rejected/cancelled plan, returns 409.
+
+7. **Verify audit.** `/audit?entity_id=<incident_id>` shows the full chain: `incident.created` ->
+   `incident.ai_analyzed` -> `response_plan.policy_evaluated` -> `response_plan.created` ->
+   `response_plan.approved` (or `.rejected`/`.cancelled`).
+
+8. **Run the AI-disabled workflow.** Set `SENTINEL_AI_ENABLED=false`, restart `make api`, run a
+   scenario, open the resulting incident - the AI Assessment panel reads `DISABLED`, but **Response
+   Planning** still lists real eligible playbooks (computed by the policy engine alone) and lets an
+   analyst pick one, create a plan, and approve it - the entire response-planning flow requires no
+   LLM at all. Re-enable AI afterward the same way.
+
+9. **Confirm nothing was executed.** Every approved plan's `execution_status` is
+   `EXECUTION_NOT_ENABLED` - `grep`/`curl` any plan and confirm; there is no code path in this
+   phase that can set it to anything else.
+
 ## Stop
 
 ```bash
@@ -209,8 +267,9 @@ make health
 
 Runs `scripts/healthcheck.sh`, which checks PostgreSQL connectivity, API `/health`, dashboard HTTP
 response, MissionNet health, the AI Analyst status endpoint (non-critical - reports `DISABLED`
-truthfully when `SENTINEL_AI_ENABLED=false`, which is still a PASS), migration version, and that a
-knowledge/policy bundle is present. Exits non-zero on any critical failure.
+truthfully when `SENTINEL_AI_ENABLED=false`, which is still a PASS), migration version, that a
+knowledge bundle is present, and that the playbook catalog loads all 5 playbooks. Exits non-zero on
+any critical failure.
 
 ## Offline check
 

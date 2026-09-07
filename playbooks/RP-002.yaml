@@ -1,0 +1,31 @@
+id: RP-002
+version: "1.0"
+name: Service Credential Protection
+description: >
+  Bounded response plan for an identity-compromise indicator (DET-006: a revoked
+  service token followed by continued record access). Revokes and rotates the
+  affected service token and preserves evidence.
+enabled: true
+allowed_asset_types: []
+allowed_incident_categories:
+  - identity-compromise
+minimum_incident_severity:
+  - high
+requires_human_approval: true
+reversible: true
+actions:
+  - action_id: revoke_test_token
+    target_source: incident_identity
+  - action_id: rotate_test_token
+    target_source: incident_identity
+  - action_id: preserve_evidence
+    target_source: incident
+verification:
+  - token_invalid
+  - token_rotated
+  - evidence_snapshot_created
+rollback:
+  - reissue_original_token
+risk:
+  mission_impact: medium
+  reversibility: high

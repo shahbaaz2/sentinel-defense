@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { AIAnalystPanel } from "./AIAnalystPanel";
 import { IncidentWorkflowPanel } from "./IncidentWorkflowPanel";
+import { ResponsePlanCreator } from "./ResponsePlanCreator";
 
 const API_BASE = process.env.SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
 
@@ -65,6 +66,14 @@ type IncidentDetail = {
   notes: Note[];
 };
 
+type Playbook = { id: string; name: string; requires_human_approval: boolean };
+type ResponsePlanSummary = {
+  response_plan_id: string;
+  playbook_id: string;
+  status: string;
+  created_at: string;
+};
+
 type NormalizedEvent = {
   event_id: string;
   timestamp: string;
@@ -122,6 +131,17 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
   const assessmentHistory = await getJSON<AIAssessment[]>(
     `/api/v1/incidents/${incident.incident_id}/ai/assessments`,
   );
+  const eligiblePlaybooks =
+    (await getJSON<Playbook[]>(`/api/v1/incidents/${incident.incident_id}/eligible-playbooks`)) ??
+    [];
+  const responsePlans =
+    (await getJSON<ResponsePlanSummary[]>(
+      `/api/v1/incidents/${incident.incident_id}/response-plans`,
+    )) ?? [];
+  const aiRecommendedPlaybookId =
+    latestAssessment?.validation_status === "VALID"
+      ? (latestAssessment.assessment?.recommended_playbook_id ?? null)
+      : null;
 
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
@@ -262,6 +282,15 @@ export default async function IncidentDetailPage(props: PageProps<"/incidents/[i
           incidentId={incident.incident_id}
           initialAssessment={latestAssessment}
           initialAssessmentCount={assessmentHistory?.length ?? 0}
+        />
+
+        {/* RESPONSE PLANNING (Phase 6) */}
+        <ResponsePlanCreator
+          incidentId={incident.incident_id}
+          aiRecommendedPlaybookId={aiRecommendedPlaybookId}
+          aiAssessmentId={latestAssessment?.assessment_id ?? null}
+          initialEligiblePlaybooks={eligiblePlaybooks}
+          initialResponsePlans={responsePlans}
         />
 
         {/* F. ANALYST WORKFLOW */}

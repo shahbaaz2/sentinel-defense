@@ -44,7 +44,9 @@ check "Demo Control console reachable" "curl -fsS http://127.0.0.1:3200" 0
 check "Demo Control DB migration applied" "docker exec sentinel-postgres psql -U democontrol -d democontrol -tAc \"select 1 from alembic_version\"" 1
 check "AI Analyst status endpoint" "curl -fsS http://${API_HOST}:${API_PORT}/api/v1/ai/status" 0
 check "Knowledge bundle present" "[ -n \"${SENTINEL_KNOWLEDGE_BUNDLE:-}\" ]" 0
-check "Policy bundle present" "[ -n \"${SENTINEL_POLICY_BUNDLE:-}\" ]" 0
+check "Playbook catalog loads (5 playbooks)" \
+  "[ \"\$(curl -fsS http://${API_HOST}:${API_PORT}/api/v1/playbooks | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')\" = \"5\" ]" \
+  1
 
 echo
 if [ "$FAIL" -ne 0 ]; then

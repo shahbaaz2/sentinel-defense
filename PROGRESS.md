@@ -3,16 +3,131 @@
 Current phase, what is actually verified working (not just present), and the next task. Update this
 at every phase checkpoint — never claim something works without having run the check.
 
-## Current phase: Phase 5 — COMPLETE (local AI Analyst, real MLX inference verified live)
+## Current phase: Phase 6 — COMPLETE (playbook catalog, policy engine, human approval)
 
-### Phase 0-4 recap (see git history for full detail)
+### Phase 0-5 recap (see git history for full detail)
 Repo scaffold, MissionNet's full synthetic data model + lab-control API + Operations Console,
 Sentinel's real ingestion/normalization/deterministic-detection/correlation pipeline with 6 rules
 (DET-001..006), Sentinel API + dashboard, Demo Control as a fourth independent product driving 5
-declarative scenarios (SCN-001/002/003/004/010) through real MissionNet APIs, and a fully hardened
-SOC dashboard (live SSE updates, full incident workflow, Detection Coverage, Audit/Provenance,
-System Assurance) — all verified end-to-end and committed (`0fa4286`, `3e7618e`, `43525c8`,
-`6fd74d0`, `2ea809a`).
+declarative scenarios (SCN-001/002/003/004/010) through real MissionNet APIs, a fully hardened SOC
+dashboard (live SSE updates, full incident workflow, Detection Coverage, Audit/Provenance, System
+Assurance), and a local, read-only AI Analyst (MLX/Qwen3-4B, evidence-grounded, hallucination
+rejection verified at 0% acceptance) — all verified end-to-end and committed (`0fa4286`, `3e7618e`,
+`43525c8`, `6fd74d0`, `2ea809a`, `2d53452`).
+
+### Phase 6 — verified working
+
+**Playbook catalog** (`playbooks/RP-{001..005}.yaml`, loaded/validated by
+`services/policy_engine/playbooks.py`): 5 declarative response plans, each referencing only stable
+`action_id`s from a closed registry (`services/policy_engine/actions.py`, 8 actions - no shell
+commands, no SQL, no execution anywhere). Filename must equal declared `id`, which makes duplicate
+IDs structurally impossible; a playbook marked `reversible: true` must declare rollback steps (and
+vice versa); every `action_id` must be registered - all enforced at load time, not first use.
+
+**Action registry**: `revoke_test_token`, `rotate_test_token`, `suspend_test_user`,
+`quarantine_workload`, `restore_workload_network`, `preserve_evidence`,
+`request_replacement_instance`, `verify_service_health` - each a schema (risk level, reversible,
+requires_approval, expected_verification), never a function that does anything.
+
+**Deterministic policy engine** (`services/policy_engine/engine.py::evaluate_policy`), completely
+separate from the AI: takes a playbook and the same `EvidencePack` the AI Analyst reads, returns
+`ALLOW`/`DENY` with itemized `reasons`/`blocking_reasons`. Reuses Phase 5's evidence pack rather
+than adding new queries. `allowed_asset_types` matches MissionNet's real `mission_role`
+(identity/gateway/data/edge), not Sentinel's `asset_type` column (always `"service"` for every
+asset in this deployment - see DECISIONS.md). Policy bundle version (`PB-001`) lives in code, not
+config, and is recorded on every response plan.
+
+**AI playbook recommendation now genuinely constrained**: `EvidencePack.available_playbook_ids` is
+computed live by the policy engine (previously always `[]` in Phase 5, since no playbooks existed).
+Verified live: the real local model recommended **RP-005** unprompted for the SCN-010 multi-signal
+incident, matching the flagship flow's expectation exactly.
+
+**Response plan persistence + approval lifecycle** (`domain/models/orm.py::ResponsePlan`,
+`services/policy_engine/service.py`): a plan row is created if and only if policy already said
+`allowed=True` - a denied request creates no row, only an audit entry. States: `AWAITING_APPROVAL`
+→ `APPROVED`/`REJECTED`/`CANCELLED` (DRAFT/POLICY_REVIEW are vocabulary-only in Phase 6, since
+evaluation is synchronous; EXPIRED is defined but never set). Every transition requires an explicit
+human `actor`; approving/rejecting/cancelling outside a plan's one legal starting state raises
+`PlanStateError` → HTTP 409 - verified for all three bypass attempts (re-approve, approve-after-
+reject, approve-after-cancel). `execution_status` is hardcoded `EXECUTION_NOT_ENABLED` everywhere;
+no code path in this phase can set it to anything else.
+
+**Response Center API** (`apps/api/response_routes.py`): `GET /playbooks[/{id}]`,
+`GET /incidents/{id}/eligible-playbooks`, `GET /incidents/{id}/policy-check/{playbook_id}` (preview
+without creating anything), `POST /incidents/{id}/response-plan`, `GET /incidents/{id}/response-
+plans`, `GET /response-plans[/{id}]`, `POST /response-plans/{id}/{approve,reject,cancel}`. No
+endpoint accepts an arbitrary action payload.
+
+**Response Center + Response Plan Detail UI**: a filterable list of plans by status with inline
+Approve/Reject; a detail page with all 7 required sections (Incident Context, Recommended
+Playbook, Why This Playbook, Planned Actions, Policy Checks, Mission Impact, Approval), banner-
+labeled `PLANNED — NOT YET EXECUTED — AWAITING HUMAN APPROVAL` before approval and `APPROVED —
+EXECUTION NOT ENABLED IN PHASE 6` after. Incident Detail gained a Response Planning section: shows
+the AI's recommended playbook pre-selected with a live policy-check verdict, or an eligible-
+playbook picker when AI has no recommendation (or is disabled) - verified both ways live.
+
+**AI cannot approve, proven structurally** (`tests/adversarial/test_ai_cannot_approve.py`):
+`AIIncidentAssessment` has no approval-related field, an injected `approval_status` in raw model
+output is rejected by schema validation (`extra="forbid"`), and `services/policy_engine/service.py`
+- the only module that can set a plan's status - has zero import-time contact with `ai.providers`
+or any LLM call. This extends Phase 5's "no write path to incident state" guarantee
+(`tests/adversarial/test_prompt_injection.py`) to response plans.
+
+**Live SCN-010 flagship flow, verified end-to-end via the actual dashboard** (2026-09-06): ran
+SCN-010 → opened the resulting asset-degradation incident (DET-002+DET-004+DET-005, 3 correlated
+detections) → clicked ANALYZE WITH LOCAL AI (34s, `VALID`, recommended `RP-005`) → Response
+Planning section showed RP-005 pre-selected, `ELIGIBLE — HUMAN APPROVAL REQUIRED` → created the
+response plan (`recommendation_source: "ai"`, real `ai_assessment_id` attached) → Response Plan
+Detail showed all 7 sections with the real policy reasons and playbook actions → approved it as
+`demo-analyst` → banner flipped to `APPROVED — EXECUTION NOT ENABLED IN PHASE 6` → confirmed on
+Response Center (`?status=APPROVED`) and the Audit page, which showed the complete chain:
+`incident.created` → `incident.detection_merged` (×2) → `incident.ai_analyzed` →
+`response_plan.policy_evaluated` → `response_plan.created` → `response_plan.approved`.
+
+**AI-disabled manual workflow, verified live** (2026-09-06): set `SENTINEL_AI_ENABLED=false`,
+restarted the API, ran a fresh SCN-010 - the Incident Detail AI panel correctly showed `DISABLED`,
+while Response Planning still listed RP-003 and RP-005 as eligible (computed by the policy engine
+alone) and let a manual `recommendation_source: "analyst"` plan be created and approved end to end,
+with `ai_assessment_id: null` throughout. Re-enabled AI afterward the same way.
+
+### Tests and checks actually run (Phase 6)
+- **204 tests passing** (`.venv/bin/pytest -q -m "not ai_live"`, up from 150 at end of Phase 5): 54
+  new — 16 playbook schema/loader (unique-by-construction IDs, unknown action rejection, rollback/
+  reversibility consistency), 15 policy engine (every negative case in the phase spec: nonexistent/
+  disabled playbook, wrong asset type, missing asset context, severity below threshold, resolved/
+  dismissed incident, invalid category, unknown action ID via defense-in-depth, out-of-scope
+  target), 18 Response Center API (creation/policy-gating, full approve/reject/cancel lifecycle,
+  all three approval-bypass attempts, AI recommending only from the real allowlist, hallucinated
+  playbook ID rejection - both a nonexistent ID and a real-but-ineligible one, full AI-disabled
+  manual workflow), 5 adversarial (AI-cannot-approve, structurally).
+- `ruff check .` and `mypy ai services apps domain evaluation` (75 files) both clean.
+- `tsc --noEmit` and `eslint` clean on all three Next.js apps (one lint fix needed: a `useEffect`
+  calling `setState` synchronously on its early-return path, restructured to only ever update state
+  from within the fetch's own callback).
+- Full `scripts/healthcheck.sh` passes, including a new check that the playbook catalog loads all
+  5 playbooks (replacing the old `SENTINEL_POLICY_BUNDLE` env check, since that config field was
+  removed - see DECISIONS.md).
+- Live SCN-010 flagship flow and live AI-disabled workflow (both above), each exercised through the
+  actual dashboard, not just curl.
+
+### Known limitations
+- No response execution exists - `execution_status` is always `EXECUTION_NOT_ENABLED`. This is the
+  Phase 6 boundary, not an oversight (blueprint §25/§30).
+- `EXPIRED` is a defined `ResponsePlan.status` value with no code path that ever sets it - reserved
+  for a future TTL policy.
+- The Phase 4 `TelemetrySample.scenario_id` gap and the missing `scripts/offline-check.sh` (both
+  documented in Phase 4/5) remain unfixed, unchanged, and did not block this phase.
+- `DRAFT`/`POLICY_REVIEW` remain vocabulary-only states (see `docs/human-approval.md`) since policy
+  evaluation is synchronous in this phase - a plan is only ever persisted already past them, or not
+  persisted at all.
+
+### Next task
+Phase 7 — deterministic response execution + verification (the blueprint's suggested MVP stopping
+point). An approved `ResponsePlan` row already carries everything an executor needs (playbook_id,
+version, the exact actions, policy/approval provenance) - Phase 7 needs to actually call MissionNet's
+`/lab/*` endpoints for each action, record real verification results against the playbook's
+`verification` list, and implement rollback - all still gated behind the same human-approval record
+this phase created, never behind AI output directly.
 
 ### Phase 5 — verified working
 
@@ -422,7 +537,7 @@ about whether a detection or incident exists — that remains Phase 2's determin
 | 3 — Demo Control + SCN-010 causality | **Yes — verified** |
 | 4 — Sentinel dashboard | **Yes — verified** |
 | 5 — Local AI analyst (RAG is Phase 6) | **Yes — verified** |
-| 6 — Playbooks/policy/approval | Not started |
+| 6 — Playbooks/policy/approval | **Yes — verified** |
 | 7 — Deterministic response + verification (MVP stopping point) | Not started |
 | 8 — Real sensors + SIEM portability | Not started |
 | 9 — Validation/coverage/offline hardening | Not started |

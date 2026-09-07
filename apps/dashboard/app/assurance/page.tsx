@@ -21,6 +21,11 @@ type Assurance = {
   local_llm_runtime: string;
   rag_status: string;
   response_authority: string;
+  response_planning: string;
+  policy_engine: string;
+  human_approval: string;
+  response_execution: string;
+  autonomous_response: string;
   integrations: Record<string, string>;
 };
 
@@ -35,7 +40,16 @@ async function getAssurance(): Promise<Assurance | null> {
 }
 
 function Row({ label, value }: { label: string; value: string }) {
-  const ok = ["ONLINE", "ACTIVE", "DISABLED", "OPERATIONAL", "READY", "NONE"].includes(value);
+  const ok = [
+    "ONLINE",
+    "ACTIVE",
+    "DISABLED",
+    "OPERATIONAL",
+    "READY",
+    "NONE",
+    "ENABLED",
+    "DISABLED - NEXT PHASE",
+  ].includes(value);
   const warn = value === "OFFLINE" || value === "DEGRADED";
   return (
     <div className="flex items-center justify-between border-t border-zinc-200 py-2 text-sm first:border-t-0 dark:border-zinc-800">
@@ -93,6 +107,17 @@ export default async function AssurancePage() {
                 value={assurance.internet_required_for_core_demo}
               />
               <Row label="Synthetic Only" value={String(assurance.synthetic_only).toUpperCase()} />
+            </section>
+
+            <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+              <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+                Response Planning &amp; Policy
+              </h2>
+              <Row label="Response Planning" value={assurance.response_planning} />
+              <Row label="Policy Engine" value={assurance.policy_engine} />
+              <Row label="Human Approval" value={assurance.human_approval} />
+              <Row label="Response Execution" value={assurance.response_execution} />
+              <Row label="Autonomous Response" value={assurance.autonomous_response} />
             </section>
 
             <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">

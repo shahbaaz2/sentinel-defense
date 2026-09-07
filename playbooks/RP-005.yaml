@@ -1,0 +1,42 @@
+id: RP-005
+version: "1.0"
+name: Multi-Signal Incident Containment
+description: >
+  Bounded response plan for an incident correlated from two or more independent
+  detections (e.g. DET-002 + DET-004 + DET-005 on the same asset, as in SCN-010).
+  Quarantines the affected workload, revokes any implicated service token, and
+  preserves evidence. Eligibility depends on detection count, not a single fixed
+  category, since a multi-signal incident's own category is whichever detection
+  created it first (see DECISIONS.md).
+enabled: true
+allowed_asset_types: []
+allowed_incident_categories:
+  - asset-degradation
+  - telemetry-anomaly
+  - multi-signal-compromise
+  - identity-compromise
+minimum_incident_severity:
+  - high
+minimum_detection_count: 2
+requires_human_approval: true
+reversible: true
+actions:
+  - action_id: quarantine_workload
+    target_source: incident_asset
+  - action_id: revoke_test_token
+    target_source: incident_identity
+  - action_id: preserve_evidence
+    target_source: incident
+  - action_id: request_replacement_instance
+    target_source: incident_asset
+verification:
+  - workload_isolated
+  - token_invalid
+  - evidence_snapshot_created
+  - replacement_provisioned
+rollback:
+  - restore_workload_network
+  - reissue_original_token
+risk:
+  mission_impact: high
+  reversibility: medium

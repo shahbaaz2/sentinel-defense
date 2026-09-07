@@ -1,0 +1,28 @@
+id: RP-004
+version: "1.0"
+name: Sensitive Record Access Protection
+description: >
+  Bounded response plan for an anomalous pattern of sensitive mission-record
+  access (DET-003). Suspends the accessing identity and preserves evidence -
+  identity-focused, no asset containment.
+enabled: true
+allowed_asset_types: []
+allowed_incident_categories:
+  - data-access-anomaly
+minimum_incident_severity:
+  - medium
+requires_human_approval: true
+reversible: true
+actions:
+  - action_id: suspend_test_user
+    target_source: incident_identity
+  - action_id: preserve_evidence
+    target_source: incident
+verification:
+  - user_suspended
+  - evidence_snapshot_created
+rollback:
+  - reinstate_suspended_user
+risk:
+  mission_impact: low
+  reversibility: high

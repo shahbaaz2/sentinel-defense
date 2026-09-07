@@ -61,6 +61,11 @@ class EvidenceAsset(BaseModel):
     environment: str
     criticality: int
     status: str
+    mission_role: str | None = None
+    """From MissionNet's own `mission_role` (identity/gateway/data/edge) - stored in
+    `SentinelAsset.extra`. Phase 6's policy engine matches playbook `allowed_asset_types` against
+    this, not `asset_type`, since every MissionNet asset's `asset_type` is "service" - see
+    DECISIONS.md."""
 
 
 class EvidencePack(BaseModel):
@@ -79,9 +84,10 @@ class EvidencePack(BaseModel):
     events: list[EvidenceEvent]
     known_attack_techniques: list[str]
     available_playbook_ids: list[str] = []
-    """Phase 5: no playbooks are shipped yet, so this is always empty and the AI Analyst's system
-    prompt requires recommended_playbook_id to be null whenever it is. Phase 6+ populates this
-    from a real playbook catalog."""
+    """Phase 6: exactly the playbook IDs `services.policy_engine.engine.compute_eligible_playbook_
+    ids` currently allows for this incident - the AI Analyst's system prompt requires
+    recommended_playbook_id to be one of these or null. Always [] until `build_evidence_pack`
+    populates it (constructing an EvidencePack directly, e.g. in tests, leaves this empty)."""
 
 
 def _pack_hash(pack: EvidencePack) -> str:
@@ -187,6 +193,7 @@ async def build_evidence_pack(session: AsyncSession, incident_id: str) -> Eviden
                 environment=asset_row.environment,
                 criticality=asset_row.criticality,
                 status=asset_row.status,
+                mission_role=(asset_row.extra or {}).get("mission_role"),
             )
 
     pack = EvidencePack(
@@ -206,6 +213,13 @@ async def build_evidence_pack(session: AsyncSession, incident_id: str) -> Eviden
         known_attack_techniques=sorted(known_techniques),
         available_playbook_ids=[],
     )
+
+    # Phase 6: populate with whatever the deterministic policy engine actually allows for this
+    # incident right now - imported lazily to avoid a module-level import cycle (policy_engine's
+    # own evaluate_policy takes an EvidencePack as input, so it must import *this* module first).
+    from services.policy_engine.engine import compute_eligible_playbook_ids
+
+    pack = pack.model_copy(update={"available_playbook_ids": compute_eligible_playbook_ids(pack)})
     return pack
 
 

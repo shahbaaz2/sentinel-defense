@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 IncidentStatus = Literal["OPEN", "INVESTIGATING", "MONITORING", "RESOLVED", "DISMISSED"]
 IncidentDisposition = Literal[
@@ -264,4 +264,117 @@ class SystemAssuranceOut(BaseModel):
     local_llm_runtime: str
     rag_status: str = "NOT ENABLED - Phase 6"
     response_authority: str = "NONE"
+    response_planning: str = "ENABLED"
+    policy_engine: str = "OPERATIONAL"
+    human_approval: str = "ENABLED"
+    response_execution: str = "DISABLED - NEXT PHASE"
+    autonomous_response: str = "DISABLED"
     integrations: IntegrationStatusOut
+
+
+# --------------------------------------------------------------------------------------------
+# Phase 6: playbooks, policy engine, response plans
+# --------------------------------------------------------------------------------------------
+
+ResponsePlanStatus = Literal[
+    "DRAFT", "AWAITING_APPROVAL", "APPROVED", "REJECTED", "CANCELLED", "EXPIRED"
+]
+
+
+class PlaybookActionOut(BaseModel):
+    action_id: str
+    target_source: str
+    description: str
+    risk_level: str
+    reversible: bool
+    requires_approval: bool
+    expected_verification: str
+
+
+class PlaybookRiskOut(BaseModel):
+    mission_impact: str
+    reversibility: str
+
+
+class PlaybookOut(BaseModel):
+    id: str
+    version: str
+    name: str
+    description: str
+    enabled: bool
+    allowed_asset_types: list[str]
+    allowed_incident_categories: list[str]
+    minimum_incident_severity: list[str]
+    minimum_detection_count: int
+    requires_human_approval: bool
+    reversible: bool
+    actions: list[PlaybookActionOut]
+    verification: list[str]
+    rollback: list[str]
+    risk: PlaybookRiskOut
+
+
+class PolicyDecisionOut(BaseModel):
+    decision: Literal["ALLOW", "DENY"]
+    playbook_id: str
+    allowed: bool
+    reasons: list[str]
+    blocking_reasons: list[str]
+    requires_human_approval: bool
+
+
+class ResponsePlanCreate(BaseModel):
+    playbook_id: str = Field(max_length=64)
+    actor: str = Field(default="analyst", max_length=128)
+    recommendation_source: Literal["ai", "analyst"] = "analyst"
+    ai_assessment_id: str | None = Field(default=None, max_length=128)
+    note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _ai_source_requires_assessment_id(self) -> "ResponsePlanCreate":
+        if self.recommendation_source == "ai" and not self.ai_assessment_id:
+            raise ValueError("recommendation_source 'ai' requires ai_assessment_id")
+        return self
+
+
+class ResponsePlanOut(BaseModel):
+    response_plan_id: str
+    incident_id: str
+    playbook_id: str
+    playbook_version: str
+    created_at: datetime
+    created_by: str
+    recommendation_source: Literal["ai", "analyst"]
+    ai_assessment_id: str | None
+    policy_bundle_version: str
+    policy_decision: str
+    policy_reasons: list[str]
+    risk_level: str
+    reversible: bool
+    status: ResponsePlanStatus
+    approved_by: str | None
+    approved_at: datetime | None
+    rejected_by: str | None
+    rejected_at: datetime | None
+    rejection_reason: str | None
+    cancelled_by: str | None
+    cancelled_at: datetime | None
+    scenario_id: str | None
+    execution_status: str
+
+    model_config = {"from_attributes": True}
+
+
+class ResponsePlanApprove(BaseModel):
+    actor: str = Field(max_length=128)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ResponsePlanReject(BaseModel):
+    actor: str = Field(max_length=128)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class ResponsePlanCancel(BaseModel):
+    actor: str = Field(max_length=128)
+    note: str | None = Field(default=None, max_length=2000)
