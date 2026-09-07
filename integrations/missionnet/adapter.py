@@ -36,8 +36,9 @@ class MissionNetAdapter(EventSourceAdapter):
         *,
         since: datetime | None = None,
         cursor: str | None = None,
+        limit: int | None = None,
     ) -> EventBatch:
-        params: dict[str, str | int] = {"limit": POLL_LIMIT}
+        params: dict[str, str | int] = {"limit": limit or POLL_LIMIT}
         if since is not None:
             params["since"] = since.isoformat()
 
@@ -61,6 +62,14 @@ class MissionNetAdapter(EventSourceAdapter):
         ]
         next_cursor = max(e.occurred_at for e in events)
         return EventBatch(events=events, next_cursor=next_cursor)
+
+    async def health(self) -> bool:
+        try:
+            async with httpx.AsyncClient(base_url=self._base_url, timeout=3.0) as client:
+                resp = await client.get("/health")
+                return resp.status_code == 200
+        except httpx.HTTPError:
+            return False
 
 
 def missionnet_audit_adapter(base_url: str = DEFAULT_BASE_URL) -> MissionNetAdapter:

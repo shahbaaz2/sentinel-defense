@@ -13,6 +13,9 @@ type Event = {
   asset_id: string | null;
   user_id: string | null;
   scenario_id: string | null;
+  rule_id: string | null;
+  src_ip: string | null;
+  dst_ip: string | null;
   summary: string;
 };
 
@@ -50,6 +53,9 @@ export default async function EventExplorerPage(props: PageProps<"/events">) {
     asset_id: str(sp.asset_id),
     user_id: str(sp.user_id),
     scenario_id: str(sp.scenario_id),
+    rule_id: str(sp.rule_id),
+    src_ip: str(sp.src_ip),
+    dst_ip: str(sp.dst_ip),
   };
   const page = Math.max(1, parseInt(str(sp.page)) || 1);
 
@@ -132,6 +138,24 @@ export default async function EventExplorerPage(props: PageProps<"/events">) {
             placeholder="scenario_id"
             className="w-28 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
           />
+          <input
+            name="rule_id"
+            defaultValue={filters.rule_id}
+            placeholder="rule/signature (e.g. NET-001)"
+            className="w-44 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <input
+            name="src_ip"
+            defaultValue={filters.src_ip}
+            placeholder="src IP"
+            className="w-28 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <input
+            name="dst_ip"
+            defaultValue={filters.dst_ip}
+            placeholder="dst IP"
+            className="w-28 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+          />
           <button type="submit" className="rounded bg-black px-3 py-1 text-white dark:bg-white dark:text-black">
             Filter
           </button>
@@ -158,6 +182,8 @@ export default async function EventExplorerPage(props: PageProps<"/events">) {
                     <th className="px-3 py-2">Severity</th>
                     <th className="px-3 py-2">Asset</th>
                     <th className="px-3 py-2">User</th>
+                    <th className="px-3 py-2">Rule</th>
+                    <th className="px-3 py-2">Src → Dst</th>
                     <th className="px-3 py-2">Scenario</th>
                   </tr>
                 </thead>
@@ -184,6 +210,12 @@ export default async function EventExplorerPage(props: PageProps<"/events">) {
                       </td>
                       <td className="px-3 py-2 font-mono text-xs">{e.asset_id ?? "—"}</td>
                       <td className="px-3 py-2 font-mono text-xs">{e.user_id ?? "—"}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{e.rule_id ?? "—"}</td>
+                      <td className="px-3 py-2 font-mono text-xs">
+                        {e.src_ip || e.dst_ip
+                          ? `${e.src_ip ?? "?"} → ${e.dst_ip ?? "?"}`
+                          : "—"}
+                      </td>
                       <td className="px-3 py-2 font-mono text-xs">{e.scenario_id ?? "—"}</td>
                     </tr>
                   ))}

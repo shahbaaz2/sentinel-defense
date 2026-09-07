@@ -132,6 +132,9 @@ async def list_events(
     event_type: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
     scenario_id: str | None = Query(default=None),
+    rule_id: str | None = Query(default=None),
+    src_ip: str | None = Query(default=None),
+    dst_ip: str | None = Query(default=None),
     since: datetime | None = Query(default=None),
     until: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -153,6 +156,12 @@ async def list_events(
         stmt = stmt.where(NormalizedEventRecord.user_id == user_id)
     if scenario_id:
         stmt = stmt.where(NormalizedEventRecord.scenario_id == scenario_id)
+    if rule_id:
+        stmt = stmt.where(NormalizedEventRecord.rule_id == rule_id)
+    if src_ip:
+        stmt = stmt.where(NormalizedEventRecord.src_ip == src_ip)
+    if dst_ip:
+        stmt = stmt.where(NormalizedEventRecord.dst_ip == dst_ip)
     if since:
         stmt = stmt.where(NormalizedEventRecord.timestamp >= since)
     if until:

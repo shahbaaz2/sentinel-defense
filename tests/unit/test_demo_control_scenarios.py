@@ -15,10 +15,10 @@ def test_every_required_scenario_loads_and_validates(scenario_id):
     assert len(scenario.success_conditions) >= 1
 
 
-def test_list_scenarios_finds_all_five():
+def test_list_scenarios_finds_all_six():
     scenarios = list_scenarios()
     ids = {s.id for s in scenarios}
-    assert ids == {"SCN-001", "SCN-002", "SCN-003", "SCN-004", "SCN-010"}
+    assert ids == {"SCN-001", "SCN-002", "SCN-003", "SCN-004", "SCN-010", "SCN-NET-001"}
 
 
 def test_scn010_expects_five_distinct_rules():

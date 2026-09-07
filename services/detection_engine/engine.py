@@ -45,6 +45,11 @@ async def _load_recent_events(session: AsyncSession, lookback: timedelta) -> lis
             asset_id=r.asset_id,
             user_id=r.user_id,
             scenario_id=r.scenario_id,
+            source=r.source,
+            src_ip=r.src_ip,
+            dst_ip=r.dst_ip,
+            rule_id=r.rule_id,
+            dns_query=r.dns_query,
         )
         for r in rows
     ]
@@ -72,7 +77,7 @@ async def _persist_candidate(
             rule_name=rule.name,
             severity=candidate.severity,
             asset_id=candidate.asset_id,
-            correlation_key=candidate.asset_id or candidate.user_id,
+            correlation_key=candidate.correlation_key or candidate.asset_id or candidate.user_id,
             mitre_techniques=rule.mitre_techniques,
             evidence_summary=candidate.evidence_summary,
             dedupe_key=dedupe_key,

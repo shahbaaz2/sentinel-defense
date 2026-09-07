@@ -3,19 +3,148 @@
 Current phase, what is actually verified working (not just present), and the next task. Update this
 at every phase checkpoint — never claim something works without having run the check.
 
-## Current phase: Phase 7 — COMPLETE (deterministic response execution, verification, rollback)
+## Current phase: Phase 8 — COMPLETE (real sensor adapters, SIEM portability)
 
-### Phase 0-6 recap (see git history for full detail)
+### Phase 0-7 recap (see git history for full detail)
 Repo scaffold, MissionNet's full synthetic data model + lab-control API + Operations Console,
 Sentinel's real ingestion/normalization/deterministic-detection/correlation pipeline with 6 rules
 (DET-001..006), Sentinel API + dashboard, Demo Control as a fourth independent product driving 5
 declarative scenarios (SCN-001/002/003/004/010) through real MissionNet APIs, a fully hardened SOC
 dashboard (live SSE updates, full incident workflow, Detection Coverage, Audit/Provenance, System
 Assurance), a local, read-only AI Analyst (MLX/Qwen3-4B, evidence-grounded, hallucination rejection
-verified at 0% acceptance), and Phase 6's playbook catalog + deterministic policy engine + human
+verified at 0% acceptance), Phase 6's playbook catalog + deterministic policy engine + human
 approval lifecycle for `ResponsePlan`s (AI can only ever recommend a playbook ID, proven
-structurally never able to approve one) — all verified end-to-end and committed (`0fa4286`,
-`3e7618e`, `43525c8`, `6fd74d0`, `2ea809a`, `2d53452`, `a13a2e1`).
+structurally never able to approve one), and Phase 7's deterministic response executor (`EX-001`) -
+execution, independent verification, and rollback, gated behind a second explicit human action
+after approval, with the LLM never holding a code path that can call MissionNet - all verified
+end-to-end and committed (`0fa4286`, `3e7618e`, `43525c8`, `6fd74d0`, `2ea809a`, `2d53452`,
+`a13a2e1`, `820c9e4`).
+
+### Phase 8 — verified working
+
+**Vendor-neutral adapter registry** (`services/event_ingestor/registry.py`): one `AdapterDescriptor`
+per source - MissionNet plus five Phase 8 sensors - each with a real, live-computed `status()`
+(ACTIVE/DEGRADED/NOT_CONFIGURED), built fresh from settings on every call. `EventSourceAdapter`
+(`services/event_ingestor/ports.py`) gained a mandatory `health()` method and a `limit` parameter,
+implemented by every adapter including a retrofitted `MissionNetAdapter`. `services/` still never
+imports `apps/` - the registry takes a structurally-typed `AdapterSettings` Protocol instead of the
+concrete `apps.api.config.Settings` (see DECISIONS.md).
+
+**Suricata and Zeek - genuinely real, not fixtures** (`integrations/suricata/`,
+`integrations/zeek/`, `services/sensor_lab/pipeline.py`): a new pipeline generates one bounded
+burst of safe synthetic HTTP/DNS traffic between ephemeral Docker containers on an isolated bridge
+network, captures it to a pcap, then runs real `jasonish/suricata:latest` (`--runmode=single`) and
+real `zeek/zeek:latest` against that pcap in batch mode - both exit in under a second and hold no
+memory afterward, never running as daemons (see DECISIONS.md for why, including a real "capture
+container on the wrong side of the bridge only sees ARP" bug found and fixed while building it).
+File-based `SuricataFileAdapter`/`ZeekFileAdapter` read the resulting `eve.json`/`conn.log`/
+`dns.log`/`http.log` through the exact same `EventSourceAdapter` contract MissionNet's HTTP-polling
+adapter uses - same per-(source, stream) cursor, same idempotency guarantee. Both default `false`
+in `.env` (opt-in, like every other optional capability this project has shipped) but are fully
+functional once enabled.
+
+**Three new deterministic network rules** (`services/detection_engine/rules.py`): NET-001
+(Suricata high-severity alert), NET-002 (Zeek DNS evidence matching a deterministic DGA-shaped
+heuristic - >=10 characters, >=3 digits in the leftmost label - evaluated at detection time, never
+pre-judged by the mapper), and NET-003 (Suricata alert + independent Zeek evidence from the same
+originating host within 60s - proof of genuine cross-sensor correlation, not just parallel
+ingestion). All three group by `correlation_key = f"host:{src_ip}"`, reusing the *existing*
+incident-correlation engine unchanged (`RuleCandidate` gained one optional `correlation_key`
+override field - see DECISIONS.md for why host-based, not full-flow-tuple).
+
+**Wazuh and Splunk - contract/mock-tested, honestly NOT_CONFIGURED** (`integrations/wazuh/`,
+`integrations/splunk/`): both adapters are as production-shaped as MissionNet's or Suricata's -
+real HTTP clients speaking each vendor's real REST envelope (Wazuh's `{"data": {"affected_items":
+[...]}}`, Splunk's `/services/search/jobs/export` NDJSON export) - tested against
+`httpx.MockTransport` with genuine, representative fixture payloads, since no live Wazuh manager or
+Splunk instance exists in this Lite-profile lab (the phase prompt explicitly sanctions this
+fallback for both). Splunk is read-only by construction (only `/services/server/info` and the
+bounded search export are ever called) with three configurable field-mapping profiles
+(`integrations/splunk/mappings/{generic_security,suricata,windows_security}.yaml`) since no two
+Splunk deployments share one field-name schema. Neither reports `ACTIVE` anywhere in this session -
+truthfully `NOT_CONFIGURED`, per the phase's own instruction never to claim live validation without
+a real instance.
+
+**Falco**: contract (`integrations/falco/schemas.py`) + mapper + file-based adapter + fixtures
+only, per the phase's explicit minimum scope - not run live anywhere.
+
+**Multi-source ingestion with real error isolation** (`services/event_ingestor/service.py::
+ingest_all`): every enabled adapter's every stream runs independently, wrapped in its own
+try/except - a failing adapter (verified live: MissionNet paused mid-cycle) is caught, logged,
+recorded to a new `IngestionAdapterStatus(source, stream, last_attempt_at, last_success_at,
+last_error)` table, and reported with `error` set, while every other adapter's ingestion proceeds
+unaffected in the same cycle. Two real bugs were found and fixed closing this out: MissionNet's own
+asset sync originally sat outside this isolation and could abort the whole cycle on a MissionNet
+outage; and a DB-only reset left stale Suricata/Zeek output files on disk that got re-ingested by
+the next unrelated scenario, fabricating a spurious incident - both documented in DECISIONS.md.
+
+**Data Sources UI + Event Explorer + System Assurance, all reading real state**: a new
+`/data-sources` page (`GET /api/v1/integrations`) shows every adapter's live status, version,
+capabilities, last successful ingest time, real event count, and last error - never a hardcoded
+string, never a credential. Event Explorer gained `rule_id`/`src_ip`/`dst_ip` filters and columns.
+System Assurance's `integrations` block is now computed from the same registry instead of
+hardcoded literals (`missionnet: "ACTIVE"` was previously a constant regardless of reality).
+
+**SCN-NET-001, the Phase 8 flagship, verified live end-to-end through Demo Control** (2026-09-06):
+safe synthetic traffic → real Suricata + real Zeek → Sentinel's real
+adapter/normalizer/detection/incident pipeline → one incident (category `network-intrusion`) with
+NET-001, NET-002, and NET-003 all present, in ~10-15 seconds wall clock, entirely independent of
+MissionNet (`expected_observations.missionnet: []`). Re-run twice: PASSED both times with disjoint
+detection/incident IDs after each automatic reset (see DECISIONS.md's file-cleanup fix).
+
+**SCN-010 regression, verified after every Phase 8 change**: still PASSes with exactly its own 5
+detections and no stray `NET-*` detections, confirming the shared pipeline/reset/correlation-engine
+changes didn't leak network-sensor state into MissionNet-driven scenarios.
+
+**Raw provenance preserved end to end for sensor events**: `RawEvent.payload`/`sha256`, `rule_id`/
+`src_ip`/`dst_ip`/`dns_query` as their own `NormalizedEventRecord` columns (not buried in free
+text), verified live: every `event_ids` entry on the SCN-NET-001 incident traces back to a real,
+fetchable raw Suricata/Zeek record via `GET /api/v1/events/{id}`.
+
+### Tests and checks actually run (Phase 8)
+- **322 tests passing** (`.venv/bin/pytest -q -m "not ai_live"`, up from 235 at end of Phase 7): 87
+  new - mapper unit tests for Suricata/Zeek/Wazuh/Falco/Splunk (parsing real representative
+  payloads, rejecting malformed ones), NET-001/002/003 rule unit tests, adapter-registry tests
+  (enabled/disabled/partially-configured combinations, ACTIVE/DEGRADED/NOT_CONFIGURED transitions),
+  file-based-adapter cursor/idempotency tests, Wazuh adapter and Splunk client/adapter tests against
+  `httpx.MockTransport` (auth, TLS-shaped config, timeout, malformed envelope), and integration
+  tests proving the full Suricata+Zeek fixture-driven pipeline end to end (cross-sensor incident,
+  no-duplicate-on-replay, raw provenance, one-adapter-failure-doesn't-stop-others, the
+  `/api/v1/integrations` endpoint, and Event Explorer's new filters) against the real API and a real
+  Postgres.
+- `ruff check .` clean; `mypy ai services apps domain evaluation integrations` clean (109 files -
+  `integrations/` is now part of the canonical command; see DECISIONS.md).
+- `tsc --noEmit` and `eslint` clean on all three Next.js apps.
+- Full `scripts/healthcheck.sh` passes, including a new check that `/api/v1/integrations` lists
+  all 6 adapters.
+- Live SCN-NET-001 (twice, for reproducibility) and live SCN-010 regression (after every
+  Phase 8 change that touched shared code), each exercised through the actual Demo Control API and
+  the real dashboard (Data Sources, Event Explorer, System Assurance) - not just automated tests.
+
+### Known limitations
+- Wazuh and Splunk have no live-validated instance in this environment - both are fully built,
+  contract/mock-tested, and ready to point at a real deployment via `.env` with no code change, but
+  neither has ever actually run against one. This is the phase's own explicitly sanctioned scope,
+  not an oversight.
+- Falco is contract/fixture-only - no live run anywhere, per the phase's own minimum-scope
+  instruction (a live Falco needs kernel-level instrumentation of the Colima VM not worth the added
+  instability for this profile).
+- Suricata/Zeek default disabled in `.env`/`.env.example` - an operator must explicitly opt in
+  (`SENTINEL_SURICATA_ENABLED=true`/`SENTINEL_ZEEK_ENABLED=true`) before SCN-NET-001 produces any
+  detections; this is a deliberate default (see DECISIONS.md), not a limitation of the adapters
+  themselves.
+- No Splunk SPL parsing layer - field mapping is an explicit per-deployment YAML profile, by design
+  (blueprint scope).
+- Pre-existing gaps from earlier phases (the Phase 4 `TelemetrySample.scenario_id` gap, the missing
+  `scripts/offline-check.sh` follow-through) remain unfixed, unchanged, and did not block this
+  phase.
+
+### Next task
+Phase 9 - validation, coverage, and offline hardening. Phase 8 completes the SIEM-portability
+milestone: Sentinel now proves it can ingest from a vendor-neutral adapter boundary spanning a
+synthetic lab and real security tooling (two genuinely live, three contract-tested to the same
+standard), with multi-source ingestion, real error isolation, and full raw provenance - all without
+any change to the core detection/correlation/AI/policy/response chain built in Phases 2-7.
 
 ### Phase 7 — verified working
 
@@ -679,6 +808,6 @@ about whether a detection or incident exists — that remains Phase 2's determin
 | 5 — Local AI analyst (RAG is Phase 6) | **Yes — verified** |
 | 6 — Playbooks/policy/approval | **Yes — verified** |
 | 7 — Deterministic response + verification (MVP stopping point) | **Yes — verified** |
-| 8 — Real sensors + SIEM portability | Not started |
+| 8 — Real sensors + SIEM portability | **Yes — verified** |
 | 9 — Validation/coverage/offline hardening | Not started |
 | 10 — Model benchmarking | Not started |

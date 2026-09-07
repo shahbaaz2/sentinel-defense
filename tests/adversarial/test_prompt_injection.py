@@ -29,9 +29,9 @@ from apps.api.main import app as sentinel_app
 from apps.missionnet.seed import reset_and_seed as reset_missionnet
 from domain.db import Base, SessionLocal, engine
 from domain.models import orm  # noqa: F401 - registers tables on Base.metadata
-from integrations.missionnet.adapter import missionnet_audit_adapter, missionnet_telemetry_adapter
 from services.ai_analyst.evidence import build_evidence_pack
 from services.detection_engine.engine import run_detection_engine
+from services.event_ingestor.registry import missionnet_registry
 from services.event_ingestor.reset import reset as reset_sentinel
 from services.event_ingestor.service import ingest_all, sync_missionnet_assets
 from services.incident_engine.engine import run_incident_correlation
@@ -72,11 +72,8 @@ async def _create_incident_with_injected_username() -> str:
     async with SessionLocal() as session:
         await sync_missionnet_assets(session, MISSIONNET_BASE_URL)
     async with SessionLocal() as session:
-        adapters = {
-            "audit": missionnet_audit_adapter(MISSIONNET_BASE_URL),
-            "telemetry": missionnet_telemetry_adapter(MISSIONNET_BASE_URL),
-        }
-        await ingest_all(session, adapters)
+        registry = missionnet_registry(MISSIONNET_BASE_URL)
+        await ingest_all(session, registry)
     async with SessionLocal() as session:
         await run_detection_engine(session)
     async with SessionLocal() as session:

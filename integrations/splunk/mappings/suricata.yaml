@@ -1,0 +1,16 @@
+name: suricata
+description: >
+  Field mapping for a Splunk index fed by the Suricata Splunk TA (Technology Add-on), which
+  indexes eve.json fields largely as-is under an `alert.*`/`src_ip`/`dest_ip` shape rather than
+  Splunk's own CIM `src`/`dest` names.
+time_field: _time
+host_field: host
+source_field: source
+sourcetype_field: sourcetype
+src_ip_field: src_ip
+dst_ip_field: dest_ip
+user_field: null
+severity_field: alert.severity
+signature_field: alert.signature
+rule_id_field: alert.signature_id
+default_severity: medium

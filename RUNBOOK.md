@@ -300,6 +300,55 @@ approval.
    response is unchanged and `GET .../actions` shows no new rows (no action re-runs, no duplicate
    MissionNet calls).
 
+## Network sensor pipeline: Suricata + Zeek (Phase 8)
+
+Full design: `docs/sensor-pipeline.md`, `docs/integrations.md`. Requires Docker (via Colima) - the
+first run pulls `jasonish/suricata:latest`, `zeek/zeek:latest`, `nginx:alpine`, `alpine:latest`, and
+`nicolaka/netshoot:latest` (~2.4 GB total, one-time; cached afterward).
+
+1. **Enable the adapters.** In `.env`:
+   ```bash
+   SENTINEL_SURICATA_ENABLED=true
+   SENTINEL_ZEEK_ENABLED=true
+   ```
+   Restart `make api`. Both default `false` - a fresh checkout ingests only MissionNet, exactly
+   like Phase 0-7, until this is set.
+
+2. **Run SCN-NET-001** (see "Run a scenario through Demo Control" above, or drive it from
+   http://127.0.0.1:3200):
+   ```bash
+   curl -s -X POST -H "Content-Type: application/json" -d '{}' \
+     http://127.0.0.1:8100/api/v1/scenarios/SCN-NET-001/run
+   # poll .../runs/RUN-<id> until PASSED (~10-15s: real Docker containers actually run)
+   ```
+   This generates one bounded burst of safe synthetic HTTP/DNS traffic, captures it, runs real
+   Suricata and Zeek against it, and ingests the results - no MissionNet state is touched at all.
+
+3. **Verify the result.**
+   ```bash
+   curl -s http://127.0.0.1:8080/api/v1/integrations | python3 -m json.tool
+   # suricata/zeek should now read "status": "ACTIVE" with a real event_count
+   curl -s "http://127.0.0.1:8080/api/v1/events?source=suricata" | python3 -m json.tool
+   ```
+   Or open http://127.0.0.1:3000/data-sources (Data Sources page) and
+   http://127.0.0.1:3000/events?source=zeek (Event Explorer, filterable by source/rule/src-dst IP).
+   The resulting incident (category `network-intrusion`) should show detections `NET-001`,
+   `NET-002`, and `NET-003` - the last one proving real Suricata+Zeek cross-sensor correlation.
+
+4. **Run it standalone without Demo Control** (for iterating on the pipeline itself):
+   ```bash
+   .venv/bin/python -c "
+   import asyncio
+   from services.sensor_lab.pipeline import run_network_sensor_lab
+   print(asyncio.run(run_network_sensor_lab()))
+   "
+   curl -s -X POST "http://127.0.0.1:8080/api/v1/ingest/run" | python3 -m json.tool
+   ```
+
+5. **Disable again.** Set both back to `false` and restart `make api` - every other scenario
+   (SCN-001 through SCN-010) works identically with the sensor adapters off, exactly as before this
+   phase.
+
 ## Stop
 
 ```bash
@@ -327,9 +376,12 @@ Runs `scripts/healthcheck.sh`, which checks PostgreSQL connectivity, API `/healt
 response, MissionNet health, the AI Analyst status endpoint (non-critical - reports `DISABLED`
 truthfully when `SENTINEL_AI_ENABLED=false`, which is still a PASS), migration version, that a
 knowledge bundle is present, that the playbook catalog loads all 5 playbooks, that the response
-plans API is reachable, and that `system/assurance` reports `response_execution: "ENABLED -
+plans API is reachable, that `system/assurance` reports `response_execution: "ENABLED -
 BOUNDED"` (non-critical - reads `DISABLED` truthfully if `SENTINEL_RESPONSE_EXECUTION_ENABLED=false`,
-still a PASS). Exits non-zero on any critical failure.
+still a PASS), and that `/api/v1/integrations` lists all 6 adapters (their individual ACTIVE/
+DEGRADED/NOT_CONFIGURED status is not itself pass/fail here - Suricata/Zeek/Wazuh/Splunk/Falco
+being NOT_CONFIGURED is the correct default, checked instead by the Data Sources page). Exits
+non-zero on any critical failure.
 
 ## Offline check
 
@@ -394,6 +446,20 @@ lsof -ti :8090 | xargs kill -9
 This bit Phase 7's response executor once - see DECISIONS.md's "real bugs found and fixed" entry.
 Response execution will report `execution_status: FAILED`/`ROLLED_BACK` with a 404-shaped error in
 that action's `error_message` when this happens, not a silent no-op.
+
+### SCN-NET-001 fails or `run_network_sensor_lab` raises `SensorLabError`
+Confirm Docker/Colima is running (`docker info`) and that the first-time image pulls completed
+(`docker images | grep -E "suricata|zeek|nginx|netshoot"`). The pipeline cleans up its own
+containers/network even on failure, but if a previous run was killed mid-way, remove any leftovers
+by name: `docker rm -f sentinel-lab-server sentinel-lab-dns sentinel-lab-client; docker network rm
+sentinel-sensor-lab`. Check the raised error text - it includes the failing `docker` command's own
+stderr.
+
+### Suricata/Zeek show `DEGRADED` in Data Sources / System Assurance
+This is correct, not a bug, the first time: `enabled=true` but no `eve.json`/Zeek log exists yet
+(no sensor run has happened). Run SCN-NET-001 once and it becomes `ACTIVE`. If it stays `DEGRADED`
+after a run, check `SENTINEL_SURICATA_EVE_PATH`/`SENTINEL_ZEEK_LOG_DIR` point at the same directory
+`services/sensor_lab/pipeline.py` actually wrote to (default `var/sensor-lab/`).
 
 ### Demo won't reset cleanly
 `make reset-lab` should fully restore MissionNet's seed state and clear scenario/incident/execution

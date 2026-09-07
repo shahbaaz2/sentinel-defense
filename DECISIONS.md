@@ -4,6 +4,138 @@ ADR-style log of durable engineering decisions. Newest first. Each entry: date, 
 
 ---
 
+## 2026-09-06 — Phase 8: Suricata/Zeek run in batch mode against a captured pcap, never as a live sniffer
+
+A continuously-running network sensor needs raw-socket/promiscuous access to a real interface,
+which on this machine means either running Docker containers with elevated network capabilities
+against a live capture surface, or complex Colima networking - and it would turn Suricata/Zeek into
+long-running daemons permanently competing for the same 16 GB the whole Lite profile has to share
+with Postgres, MissionNet, Demo Control, and the local LLM. Instead, `services/sensor_lab/
+pipeline.py` generates one bounded burst of safe synthetic traffic between ephemeral Docker
+containers on an isolated bridge network (`172.28.0.0/24`, no route outside this machine), captures
+it to a pcap with `tcpdump` running inside the *client* container's own network namespace (not a
+separate capture container attached to the bridge as its own port - a genuine bug found while
+building this: a bridge only forwards unicast traffic point-to-point between the two actual
+endpoints, so a third "observer" container on the same bridge sees only broadcast/ARP, never the
+unicast payload; capturing from inside the client's own netns sees everything the client itself
+sends and receives, which is the correct place to observe a single host's own traffic), then runs
+Suricata (`--runmode=single`) and Zeek (`-r <pcap>`) once each, in `docker run --rm` containers that
+exit in under a second and hold zero memory afterward. This is real Suricata and real Zeek output,
+not a fixture - it just never runs as a daemon. See `docs/sensor-pipeline.md`.
+
+## 2026-09-06 — Phase 8: Suricata/Zeek default `false` in `.env`/`.env.example` despite being real and working
+
+Every optional capability this project has ever added - the AI Analyst, RAG, response execution -
+ships disabled by default so a fresh checkout behaves identically to the phase before it until an
+operator explicitly opts in. Suricata and Zeek follow the same rule even though, unlike Wazuh and
+Splunk, they are genuinely functional here: enabling them changes what *every* scenario's ingestion
+cycle does (an extra two adapters get polled on every `POST /api/v1/ingest/run`), so leaving them on
+by default would be a behavior change to Phase 0-7's demos, not just an addition. `SENTINEL_
+SURICATA_ENABLED=true`/`SENTINEL_ZEEK_ENABLED=true` in `.env` turns them on; both default `false`.
+
+## 2026-09-06 — Phase 8: network detections correlate by originating host, not the full 4-tuple flow
+
+NET-001 (a Suricata alert on a client→server connection) and NET-002 (a suspicious DNS query on a
+client→DNS-resolver connection) are, in the SCN-NET-001 lab, two *different* flows by IP-pair - the
+server and the DNS stub have different addresses. Correlating strictly by 4-tuple (src+dst IP+port)
+would never merge them, even though they are obviously the same actor's activity and are exactly
+what NET-003 (cross-sensor correlation) is supposed to catch. Every network rule instead sets
+`RuleCandidate.correlation_key = f"host:{src_ip}"` - grouping by the *originating* host alone, the
+same principle Phase 2's identity-based correlation already uses (group by the common actor, not
+every attribute of every individual connection). This required one small, backward-compatible
+addition: `RuleCandidate` gained an optional `correlation_key` override (`services/
+detection_engine/rules.py`), read by `services/detection_engine/engine.py::_persist_candidate` in
+preference to the existing `asset_id or user_id` default - no changes to `services/incident_engine/
+engine.py` were needed, since it already groups purely by `Detection.correlation_key` regardless of
+what produced it.
+
+## 2026-09-06 — Phase 8: the adapter registry takes a structural `AdapterSettings` Protocol, not `apps.api.config.Settings`
+
+`services/event_ingestor/registry.py::build_adapter_registry` needs `suricata_enabled`, `wazuh_base_
+url`, and a dozen other settings fields - but `services/` must never import `apps/` (the same rule
+`services/response_executor` follows for MissionNet's lab secret, passing it as a plain argument
+from the apps layer instead). Rather than force every caller to import the concrete `apps.api.
+config.Settings` class, `registry.py` declares a local, duck-typed `Protocol` naming exactly the
+fields it needs; `Settings` satisfies it structurally with zero coupling. The one real wrinkle this
+caused: `services/event_ingestor/pipeline.py` (used by both the CLI, which has no `Settings`
+object, and indirectly by the API, which does) reads the same `SENTINEL_*` env vars directly via
+`os.environ.get(...)` - exactly like it already did for `MISSIONNET_BASE_URL` before this phase -
+via a local `_EnvAdapterSettings` dataclass, while `apps/api/admin_routes.py` builds the registry
+from the real `Settings` object and passes it in explicitly as an optional `adapter_registry`
+parameter. This mirrors Phase 7's `execute_response_plan(missionnet_base_url=...)` pattern exactly:
+the services-layer function takes plain data; the apps-layer caller supplies it from settings.
+
+## 2026-09-06 — Phase 8: Splunk field mapping is a configurable per-deployment profile, not a universal schema
+
+No two Splunk deployments necessarily index the same concept under the same field name - a
+Suricata Technology Add-on might index `src_ip`/`dest_ip` and a nested `alert.severity` (Splunk
+flattens JSON into dotted field names in search results), while a hand-built CIM-compliant index
+uses `src`/`dest`/`severity`. Rather than hardcode one field-name table (wrong for most real
+deployments) or build a general SPL-parsing layer (explicitly out of scope - blueprint intent),
+`integrations/splunk/schemas.py::SplunkFieldMapping` is a small, explicit table of which raw field
+holds each canonical concept, loaded from `integrations/splunk/mappings/*.yaml`. Three profiles
+ship (`generic_security`, `suricata`, `windows_security`) as realistic starting points, not an
+exhaustive list - a new deployment adds a new YAML file, no code change. A field a profile doesn't
+declare (`severity_field: null`) leaves that column `None` rather than guessing.
+
+## 2026-09-06 — Phase 8: Wazuh and Splunk are contract/mock-tested, never claimed as live-validated
+
+No live Wazuh manager or Splunk instance exists in this Lite-profile lab - both would be
+substantial, heavy, separate services competing for the same 16 GB Suricata/Zeek/Postgres/MissionNet/
+MLX already share, and neither is required to prove the architecture (the phase prompt explicitly
+sanctions this fallback for both, unlike Suricata/Zeek). Both adapters are built exactly as
+production-shaped as MissionNet's or Suricata's - real HTTP clients, real REST envelope shapes
+(Wazuh's `{"data": {"affected_items": [...]}}`, Splunk's `/services/search/jobs/export` NDJSON) -
+and tested against `httpx.MockTransport` returning genuine, representative fixture payloads
+(`tests/unit/test_wazuh_adapter.py`, `tests/unit/test_splunk_client.py`). `GET /api/v1/integrations`
+and System Assurance report both `NOT_CONFIGURED` honestly rather than a fabricated `ACTIVE` -
+enabling either against a real instance later needs a config change, not a code change.
+
+## 2026-09-06 — Phase 8: `IngestionAdapterStatus` persists real per-adapter ingestion history
+
+The Data Sources UI needs "last successful ingest" and "last error" per adapter (blueprint §11) -
+neither is derivable from existing tables. `IngestionCursor` only tracks the polling watermark, not
+whether the most recent attempt succeeded, and an `IngestionResult.error` is transient, returned
+only in the HTTP response of one `/api/v1/ingest/run` call, never stored. A new table,
+`IngestionAdapterStatus(source, stream, last_attempt_at, last_success_at, last_error)`, is updated
+on every `ingest_stream` success and every `ingest_all`-caught failure - a failed attempt updates
+`last_attempt_at`/`last_error` without touching `last_success_at`, so "when did this last actually
+work" and "when did we last try" stay genuinely distinct even through a run of consecutive
+failures, mirroring the same care `ActionResult.rollback_status` takes in Phase 7 (never claim a
+success that wasn't independently observed).
+
+## 2026-09-06 — Real bugs found and fixed this phase (both caught by testing, not shipped)
+
+1. **MissionNet asset sync wasn't covered by the new multi-adapter error isolation.**
+   `run_ingestion_cycle` calls `sync_missionnet_assets` *before* the `ingest_all` loop that wraps
+   every adapter/stream in its own try/except - a MissionNet outage during asset sync raised
+   uncaught, aborting the whole cycle before Suricata/Zeek/any other adapter ever got a chance to
+   run, exactly contradicting this phase's own requirement ("one failed adapter must not stop
+   others"). Caught by manually pausing the MissionNet process mid-cycle. Fixed by wrapping the
+   asset sync in the same try/except discipline, logging and continuing rather than aborting.
+2. **A DB-only reset left stale sensor output on disk, contaminating unrelated scenarios.**
+   Suricata/Zeek are file-based adapters with their own persisted cursor - clearing the database
+   (via `services/event_ingestor/reset.py::reset()`, which every reset path including every Demo
+   Control scenario's own automatic `lab_reset` goes through) resets that cursor to `None`, but the
+   actual `eve.json`/Zeek log files on disk survived untouched. The very next unrelated scenario's
+   own ingestion cycle would then re-ingest the *old* sensor output from scratch (fresh cursor, same
+   stale file), fabricating a spurious `network-intrusion` incident interleaved with that scenario's
+   own real one. Caught by a full-suite regression run: SCN-003's own incident-provenance test
+   picked up the wrong (stray, `scenario_id: None`) incident because it was created before the real
+   one in the same correlation pass. Fixed by having `reset()` itself also delete the generated
+   Suricata/Zeek output directories - the fix lives in the one Python function every reset path
+   shares, not duplicated in `scripts/reset-lab.sh`, so it's structurally impossible for a future
+   reset path to forget it.
+
+## 2026-09-06 — Phase 8: `mypy`'s canonical command now includes `integrations/`
+
+Every prior phase's documented quality-gate command was `mypy ai services apps domain evaluation` -
+`integrations/` (present since Phase 1's MissionNet adapter) was never actually in that list, an
+oversight rather than a deliberate exclusion. Phase 8 adds five new packages under `integrations/`,
+making the gap too large to keep overlooking. The canonical command is now `mypy ai services apps
+domain evaluation integrations` (109 files, clean) - documented here so a future phase's "the
+usual command" doesn't silently drop it again.
+
 ## 2026-09-06 — Phase 7: `execution_status` is a second, independent field - never folded into `status`
 
 Phase 6 deliberately kept a single `status` column because approval and execution weren't yet

@@ -35,6 +35,10 @@ class EventOut(BaseModel):
     event_category: str
     event_type: str
     severity: str
+    src_ip: str | None = None
+    dst_ip: str | None = None
+    rule_id: str | None = None
+    dns_query: str | None = None
     summary: str
     raw_event_ref: str
     scenario_id: str | None
@@ -243,6 +247,25 @@ class IntegrationStatusOut(BaseModel):
     suricata: str = "NOT_CONFIGURED"
     zeek: str = "NOT_CONFIGURED"
     falco: str = "NOT_CONFIGURED"
+
+
+class IntegrationDetailOut(BaseModel):
+    """Phase 8: one entry per registered adapter for the Data Sources UI - every field is either
+    computed live (`status`, via a real health check) or read from persisted, genuinely-observed
+    state (`last_successful_ingest_at`/`event_count` from `normalized_events`, `last_error` from
+    `ingestion_adapter_status`). Never a credential or token field - see
+    services/event_ingestor/registry.py."""
+
+    adapter_id: str
+    name: str
+    version: str
+    status: Literal["ACTIVE", "DEGRADED", "NOT_CONFIGURED"]
+    capabilities: list[str]
+    configuration_requirements: list[str]
+    supported_event_categories: list[str]
+    last_successful_ingest_at: datetime | None
+    event_count: int
+    last_error: str | None
 
 
 class SystemAssuranceOut(BaseModel):

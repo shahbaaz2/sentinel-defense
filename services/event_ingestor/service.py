@@ -5,7 +5,7 @@ cursor tracking so a restart resumes rather than reprocessing (blueprint §8.2, 
 import hashlib
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -14,15 +14,41 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.audit import write_audit
-from domain.models.orm import IngestionCursor, NormalizedEventRecord, RawEvent, SentinelAsset
+from domain.models.orm import (
+    IngestionAdapterStatus,
+    IngestionCursor,
+    NormalizedEventRecord,
+    RawEvent,
+    SentinelAsset,
+)
+from integrations.falco.mapper import normalize_falco_event
 from integrations.missionnet.mapper import UnmappedEventTypeError, normalize_missionnet_event
+from integrations.suricata.mapper import normalize_suricata_event
+from integrations.wazuh.mapper import normalize_wazuh_event
+from integrations.zeek.mapper import normalize_zeek_event
 from services.event_ingestor.ports import EventSourceAdapter, RawSourceEvent
+from services.event_ingestor.registry import AdapterDescriptor
 
 logger = logging.getLogger("sentinel.event_ingestor")
 
+# One mapper per source with a fixed `(raw) -> dict` signature. Splunk is the sole exception - its
+# normalizer needs a per-deployment field-mapping profile, so a SplunkAdapter instance carries its
+# own bound `.mapper` attribute instead of registering here (see integrations/splunk/adapter.py and
+# `_resolve_mapper` below).
 _MAPPERS = {
     "missionnet": normalize_missionnet_event,
+    "suricata": normalize_suricata_event,
+    "zeek": normalize_zeek_event,
+    "wazuh": normalize_wazuh_event,
+    "falco": normalize_falco_event,
 }
+
+
+def _resolve_mapper(source: str, adapter: EventSourceAdapter):
+    per_instance_mapper = getattr(adapter, "mapper", None)
+    if per_instance_mapper is not None:
+        return per_instance_mapper
+    return _MAPPERS.get(source)
 
 
 @dataclass
@@ -33,6 +59,9 @@ class IngestionResult:
     ingested: int
     skipped_duplicate: int
     skipped_unmapped: int
+    error: str | None = None
+    """Phase 8: set when this one adapter/stream failed - the ingestion cycle still runs every
+    other adapter (see `ingest_all`'s per-adapter error isolation)."""
 
 
 async def _get_cursor(session: AsyncSession, source: str, stream: str) -> datetime | None:
@@ -57,6 +86,33 @@ def _raw_event_sha256(payload: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+async def _record_ingestion_success(session: AsyncSession, source: str, stream: str) -> None:
+    now = datetime.now(UTC)
+    stmt = pg_insert(IngestionAdapterStatus).values(
+        source=source, stream=stream, last_attempt_at=now, last_success_at=now, last_error=None
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["source", "stream"],
+        set_={"last_attempt_at": now, "last_success_at": now, "last_error": None},
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def _record_ingestion_failure(
+    session: AsyncSession, source: str, stream: str, error: str
+) -> None:
+    now = datetime.now(UTC)
+    stmt = pg_insert(IngestionAdapterStatus).values(
+        source=source, stream=stream, last_attempt_at=now, last_success_at=None, last_error=error
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["source", "stream"], set_={"last_attempt_at": now, "last_error": error}
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
 async def ingest_stream(
     session: AsyncSession,
     adapter: EventSourceAdapter,
@@ -64,7 +120,7 @@ async def ingest_stream(
     source: str,
     stream: str,
 ) -> IngestionResult:
-    mapper = _MAPPERS.get(source)
+    mapper = _resolve_mapper(source, adapter)
     if mapper is None:
         raise UnmappedEventTypeError(f"no mapper registered for source {source!r}")
 
@@ -117,6 +173,7 @@ async def ingest_stream(
         )
 
     await session.commit()
+    await _record_ingestion_success(session, source, stream)
 
     return IngestionResult(
         source=source,
@@ -174,12 +231,41 @@ async def sync_missionnet_assets(session: AsyncSession, base_url: str) -> int:
 
 
 async def ingest_all(
-    session: AsyncSession, adapters: Mapping[str, EventSourceAdapter]
+    session: AsyncSession, descriptors: Iterable[AdapterDescriptor]
 ) -> list[IngestionResult]:
-    """`adapters` keys are `stream` names; all assumed to be the same `source` for now
-    (MissionNet). Extending to multiple sources means calling this once per source with its own
-    adapter map."""
-    results = []
-    for stream, adapter in adapters.items():
-        results.append(await ingest_stream(session, adapter, source="missionnet", stream=stream))
+    """Runs every enabled adapter's every stream. Phase 8 requirement: one failing adapter/stream
+    must never stop the others - each stream's `ingest_stream` call is individually wrapped, and a
+    failure is reported as an `IngestionResult` with `error` set (fetched/ingested left at 0)
+    rather than propagating and aborting the whole cycle."""
+    results: list[IngestionResult] = []
+    for descriptor in descriptors:
+        if not descriptor.enabled:
+            continue
+        for stream, adapter in descriptor.streams.items():
+            try:
+                results.append(
+                    await ingest_stream(
+                        session, adapter, source=descriptor.adapter_id, stream=stream
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate one adapter's failure from the rest
+                logger.exception(
+                    "ingestion failed for source=%s stream=%s", descriptor.adapter_id, stream
+                )
+                await session.rollback()
+                error_message = str(exc) or f"{type(exc).__name__} (no message)"
+                await _record_ingestion_failure(
+                    session, descriptor.adapter_id, stream, error_message
+                )
+                results.append(
+                    IngestionResult(
+                        source=descriptor.adapter_id,
+                        stream=stream,
+                        fetched=0,
+                        ingested=0,
+                        skipped_duplicate=0,
+                        skipped_unmapped=0,
+                        error=error_message,
+                    )
+                )
     return results

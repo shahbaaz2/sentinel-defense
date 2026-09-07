@@ -13,6 +13,7 @@ from apps.api.ai_routes import get_llm_provider
 from apps.api.config import settings
 from apps.api.schemas import IntegrationStatusOut, SystemAssuranceOut
 from domain.db import get_session
+from services.event_ingestor.registry import build_adapter_registry
 from services.policy_engine.engine import POLICY_BUNDLE_VERSION
 
 router = APIRouter(prefix="/api/v1")
@@ -61,6 +62,9 @@ async def system_assurance(
         }[provider_status]
         local_llm_runtime = provider.get_provenance().runtime
 
+    registry = build_adapter_registry(settings)
+    integration_statuses = {d.adapter_id: await d.status() for d in registry}
+
     return SystemAssuranceOut(
         deployment_profile=settings.profile.upper(),
         platform="Apple Silicon (arm64)",
@@ -81,5 +85,5 @@ async def system_assurance(
         response_execution=(
             "ENABLED - BOUNDED" if settings.response_execution_enabled else "DISABLED"
         ),
-        integrations=IntegrationStatusOut(),
+        integrations=IntegrationStatusOut(**integration_statuses),
     )

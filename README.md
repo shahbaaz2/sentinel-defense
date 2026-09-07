@@ -6,10 +6,14 @@
 > suitable for production use solely by existing. See [SECURITY.md](SECURITY.md).
 
 Sentinel is a locally deployable, disconnected-capable cyber-defense command platform prototype. It
-ingests synthetic telemetry, detects suspicious activity with deterministic rules, uses a local LLM to
-correlate evidence and recommend an approved response, and executes only policy-authorized, auditable
-containment with verification and rollback. The LLM never has arbitrary shell/SQL/SSH/firewall access —
-it returns schema-validated analysis and picks from a pre-approved playbook list.
+ingests synthetic telemetry and real security-tool output (Suricata, Zeek, and - contract-tested -
+Wazuh and Splunk) through one vendor-neutral adapter boundary, detects suspicious activity with
+deterministic rules, uses a local LLM to correlate evidence and recommend an approved response, and
+executes only policy-authorized, auditable containment with verification and rollback. The LLM never
+has arbitrary shell/SQL/SSH/firewall access — it returns schema-validated analysis and picks from a
+pre-approved playbook list. Sentinel is SIEM-agnostic: it adds normalization, evidence-grounded local
+AI, human-approved response, verification, and provenance on top of tools an organization already
+runs - it does not replace Splunk or any existing SIEM.
 
 This is **three connected deliverables** (see [DECISIONS.md](DECISIONS.md) for the full rationale):
 
@@ -68,11 +72,11 @@ real MissionNet signal, see
 | MissionNet real synthetic app | **Phase 1 — done and verified** |
 | Normalized events, deterministic detection, incidents | **Phase 2 — done and verified** |
 | Demo Control / SCN-010 scenario | **Phase 3 — done and verified** |
-| Sentinel dashboard (posture/incidents/investigation) | Overview + Incidents + Incident Detail done in Phase 2; polish/SSE pending |
-| Local MLX AI analyst + RAG | Phase 5 — not started |
-| Playbooks, policy engine, approvals | Phase 6 — not started |
-| Deterministic response + verification + rollback | Phase 7 — not started |
-| Real sensor adapters (Suricata/Zeek/Wazuh/Falco/osquery) | Phase 8 — not started |
+| Sentinel dashboard (posture, incidents, investigation, live SSE) | **Phase 4 — done and verified** |
+| Local MLX AI analyst (evidence-grounded, read-only) | **Phase 5 — done and verified** |
+| Playbooks, deterministic policy engine, human approval | **Phase 6 — done and verified** |
+| Deterministic response execution, verification, rollback | **Phase 7 — done and verified** |
+| Real sensor adapters (Suricata/Zeek live; Wazuh/Splunk/Falco contract-tested) | **Phase 8 — done and verified** |
 | Validation, coverage, offline hardening | Phase 9 — not started |
 | Model benchmarking | Phase 10 — not started |
 
@@ -88,5 +92,10 @@ See [PROGRESS.md](PROGRESS.md) for exactly what currently works and what was act
 - [docs/detection-engine.md](docs/detection-engine.md) — how the 6 deterministic lab rules work.
 - [docs/incident-correlation.md](docs/incident-correlation.md) — how detections become incidents.
 - [docs/scenario-controller.md](docs/scenario-controller.md) — Demo Control architecture and scenario format.
-- [docs/demo-runbook.md](docs/demo-runbook.md) — live demo walkthrough, including SCN-010.
-- `docs/playbooks.md` — added when Phase 6 lands.
+- [docs/demo-runbook.md](docs/demo-runbook.md) — live demo walkthrough, including SCN-010 and SCN-NET-001.
+- [docs/ai-analyst.md](docs/ai-analyst.md), [docs/model-runtime.md](docs/model-runtime.md) — the local AI Analyst.
+- [docs/response-playbooks.md](docs/response-playbooks.md), [docs/policy-engine.md](docs/policy-engine.md), [docs/human-approval.md](docs/human-approval.md) — playbooks, policy, and approval (Phase 6).
+- [docs/response-executor.md](docs/response-executor.md), [docs/verification-and-rollback.md](docs/verification-and-rollback.md) — bounded execution (Phase 7).
+- [docs/integrations.md](docs/integrations.md) — the vendor-neutral adapter registry and every Phase 8 sensor.
+- [docs/splunk-integration.md](docs/splunk-integration.md) — Splunk as a read-only, first-class enterprise integration target.
+- [docs/sensor-pipeline.md](docs/sensor-pipeline.md) — the real Suricata/Zeek pipeline behind SCN-NET-001.

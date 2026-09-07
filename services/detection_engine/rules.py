@@ -18,6 +18,11 @@ MULTI_SIGNAL_WINDOW = timedelta(seconds=120)
 TOKEN_RECORD_ACCESS_WINDOW = timedelta(minutes=10)
 CRITICAL_ASSET_THRESHOLD = 4
 
+# Phase 8: network-sensor rules.
+DGA_LABEL_MIN_LENGTH = 10
+DGA_LABEL_MIN_DIGITS = 3
+CROSS_SENSOR_WINDOW = timedelta(seconds=60)
+
 
 @dataclass(frozen=True)
 class EventView:
@@ -32,6 +37,11 @@ class EventView:
     asset_id: str | None
     user_id: str | None
     scenario_id: str | None
+    source: str = "missionnet"
+    src_ip: str | None = None
+    dst_ip: str | None = None
+    rule_id: str | None = None
+    dns_query: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +51,9 @@ class RuleCandidate:
     user_id: str | None
     severity: str
     evidence_summary: str
+    correlation_key: str | None = None
+    """Phase 8: overrides the engine's default `asset_id or user_id` grouping - network detections
+    have neither, and group by originating host instead (see NET-001/002/003 below)."""
 
 
 @dataclass(frozen=True)
@@ -265,6 +278,111 @@ def _rule_identity_compromise_token_and_access(
     return candidates
 
 
+def _rule_suricata_high_severity_alert(
+    events: list[EventView], _criticality: dict[str, int]
+) -> list[RuleCandidate]:
+    """NET-001. A single Suricata alert already at high/critical severity (Suricata's own
+    priority 1/2, translated by integrations/suricata/mapper.py) is detection-worthy on its own -
+    unlike Zeek evidence, an alert is Suricata's own conclusion, not raw evidence Sentinel must
+    still judge."""
+    return [
+        RuleCandidate(
+            event_ids=[e.event_id],
+            asset_id=None,
+            user_id=None,
+            severity=e.severity,
+            evidence_summary=f"Suricata high-severity alert from {e.src_ip} (rule {e.rule_id})",
+            correlation_key=f"host:{e.src_ip}" if e.src_ip else None,
+        )
+        for e in events
+        if e.source == "suricata"
+        and e.event_type == "suricata.alert"
+        and e.severity in ("high", "critical")
+    ]
+
+
+def _is_dga_like(label: str) -> bool:
+    """Deterministic heuristic, not a judgment call: a DNS label is treated as DGA-like if it's
+    long and digit-heavy - exactly the shape a machine-generated hostname has and a normal
+    human-chosen one (e.g. "www") doesn't. Never invented per-lab; the same two thresholds apply
+    to every incident."""
+    if len(label) < DGA_LABEL_MIN_LENGTH:
+        return False
+    digit_count = sum(1 for ch in label if ch.isdigit())
+    return digit_count >= DGA_LABEL_MIN_DIGITS
+
+
+def _rule_suspicious_dns_pattern(
+    events: list[EventView], _criticality: dict[str, int]
+) -> list[RuleCandidate]:
+    """NET-002. Zeek DNS evidence is not itself a detection (blueprint intent) - this rule is the
+    one deterministic judgment that turns a specific DNS query shape into a detection, evaluated
+    fresh against `dns_query` every run rather than relying on any pre-computed severity."""
+    candidates = []
+    for e in events:
+        if e.source != "zeek" or e.event_type != "zeek.dns" or not e.dns_query:
+            continue
+        leftmost_label = e.dns_query.split(".")[0]
+        if not _is_dga_like(leftmost_label):
+            continue
+        candidates.append(
+            RuleCandidate(
+                event_ids=[e.event_id],
+                asset_id=None,
+                user_id=None,
+                severity="medium",
+                evidence_summary=(
+                    f"Suspicious DGA-like DNS query {e.dns_query!r} from {e.src_ip}"
+                ),
+                correlation_key=f"host:{e.src_ip}" if e.src_ip else None,
+            )
+        )
+    return candidates
+
+
+def _rule_cross_sensor_correlation(
+    events: list[EventView], _criticality: dict[str, int]
+) -> list[RuleCandidate]:
+    """NET-003. Fires only when a Suricata alert AND independent Zeek evidence (conn/dns/http) are
+    both observed from the same originating host within CROSS_SENSOR_WINDOW - proof the two
+    sensors' outputs were genuinely correlated by Sentinel, not merely ingested side by side."""
+    suricata_alerts = [
+        e for e in events if e.source == "suricata" and e.event_type == "suricata.alert"
+    ]
+    zeek_evidence = [
+        e
+        for e in events
+        if e.source == "zeek" and e.event_type in ("zeek.conn", "zeek.dns", "zeek.http")
+    ]
+
+    candidates = []
+    for alert in suricata_alerts:
+        matches = [
+            z
+            for z in zeek_evidence
+            if z.src_ip == alert.src_ip
+            and abs((z.timestamp - alert.timestamp).total_seconds())
+            <= CROSS_SENSOR_WINDOW.total_seconds()
+        ]
+        if matches:
+            event_ids = [alert.event_id] + [m.event_id for m in matches]
+            candidates.append(
+                RuleCandidate(
+                    event_ids=sorted(set(event_ids)),
+                    asset_id=None,
+                    user_id=None,
+                    severity="high",
+                    evidence_summary=(
+                        f"Suricata alert from {alert.src_ip} correlated with {len(matches)} "
+                        f"independent Zeek evidence record(s) from the same host within "
+                        f"{int(CROSS_SENSOR_WINDOW.total_seconds())}s"
+                    ),
+                    correlation_key=f"host:{alert.src_ip}" if alert.src_ip else None,
+                )
+            )
+    return candidates
+
+
 RULES: list[Rule] = [
     Rule(
         rule_id="DET-001",
@@ -350,5 +468,48 @@ RULES: list[Rule] = [
         event_categories=["identity", "application"],
         mitre_techniques=["T1078"],  # Valid Accounts
         evaluate=_rule_identity_compromise_token_and_access,
+    ),
+    Rule(
+        rule_id="NET-001",
+        name="Suricata High-Severity Lab Alert",
+        version="1.0.0",
+        default_severity="high",
+        category="network-intrusion",
+        description=(
+            "Fires on a single Suricata alert already at high/critical severity (Suricata's own "
+            "priority 1/2)."
+        ),
+        event_categories=["network"],
+        mitre_techniques=[],
+        evaluate=_rule_suricata_high_severity_alert,
+    ),
+    Rule(
+        rule_id="NET-002",
+        name="Suspicious DNS Pattern from Zeek",
+        version="1.0.0",
+        default_severity="medium",
+        category="network-intrusion",
+        description=(
+            f"Fires when a Zeek DNS query's leftmost label is >= {DGA_LABEL_MIN_LENGTH} "
+            f"characters with >= {DGA_LABEL_MIN_DIGITS} digits - a deterministic DGA-like shape, "
+            "never a live threat-intel lookup."
+        ),
+        event_categories=["network"],
+        mitre_techniques=["T1568"],  # Dynamic Resolution
+        evaluate=_rule_suspicious_dns_pattern,
+    ),
+    Rule(
+        rule_id="NET-003",
+        name="Suricata + Zeek Cross-Sensor Correlation",
+        version="1.0.0",
+        default_severity="high",
+        category="network-intrusion",
+        description=(
+            "Fires when a Suricata alert and independent Zeek evidence (conn/dns/http) share the "
+            f"same originating host within {int(CROSS_SENSOR_WINDOW.total_seconds())}s."
+        ),
+        event_categories=["network"],
+        mitre_techniques=[],
+        evaluate=_rule_cross_sensor_correlation,
     ),
 ]

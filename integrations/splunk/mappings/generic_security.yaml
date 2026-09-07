@@ -1,0 +1,15 @@
+name: generic_security
+description: >
+  Default field mapping for a generic Splunk security index that already uses Splunk's own
+  Common Information Model (CIM) field names (src, dest, user, severity, signature).
+time_field: _time
+host_field: host
+source_field: source
+sourcetype_field: sourcetype
+src_ip_field: src
+dst_ip_field: dest
+user_field: user
+severity_field: severity
+signature_field: signature
+rule_id_field: rule_id
+default_severity: medium

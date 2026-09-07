@@ -19,5 +19,11 @@ fi
 
 "$REPO_ROOT/.venv/bin/python" -m apps.missionnet.seed --reset
 "$REPO_ROOT/.venv/bin/python" -m services.event_ingestor.reset
+# ^ also clears Suricata/Zeek's generated eve.json/log output (services/event_ingestor/reset.py) -
+# every reset path (this script, `make sentinel-reset`, and every Demo Control scenario's own
+# automatic lab_reset via POST /api/v1/admin/reset) goes through that one function, so the fix
+# lives there, not duplicated here. Its intermediate pcap is regenerated fresh on every
+# network-sensor run regardless, so it's not part of what "reset" needs to guarantee.
+rm -rf "$REPO_ROOT/var/sensor-lab/pcap"
 
 echo "reset-lab complete."

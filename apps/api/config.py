@@ -42,5 +42,31 @@ class Settings(BaseSettings):
     always stays on. False makes every execute/rollback request return 503 without touching
     MissionNet - an emergency kill switch, analogous to `ai_enabled` for the AI Analyst."""
 
+    # -----------------------------------------------------------------------------------------
+    # Phase 8: real sensor adapters. Every one of these defaults to disabled/absent so a fresh
+    # checkout with no sensors configured behaves exactly like Phase 0-7 - see docs/integrations.md.
+    # -----------------------------------------------------------------------------------------
+    suricata_enabled: bool = False
+    suricata_eve_path: str = "var/sensor-lab/suricata-out/eve.json"
+
+    zeek_enabled: bool = False
+    zeek_log_dir: str = "var/sensor-lab/zeek-out"
+
+    wazuh_enabled: bool = False
+    wazuh_base_url: str = ""
+    wazuh_api_token: str = ""
+    wazuh_verify_tls: bool = True
+
+    splunk_enabled: bool = False
+    splunk_base_url: str = ""
+    splunk_token: str = ""
+    splunk_verify_tls: bool = True
+    splunk_index: str = ""
+    splunk_query: str = ""
+    """A bounded SPL search, e.g. `search index=security sourcetype=suricata`. Sentinel appends its
+    own time-window/result-limit constraints - see docs/splunk-integration.md. Never logged."""
+
+    falco_enabled: bool = False
+
 
 settings = Settings()

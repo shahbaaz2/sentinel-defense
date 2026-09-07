@@ -44,6 +44,7 @@ class NormalizedEvent(BaseModel):
     src_port: int | None = Field(default=None, ge=1, le=65535)
     dst_port: int | None = Field(default=None, ge=1, le=65535)
     process_name: str | None = Field(default=None, max_length=MAX_SHORT_STR)
+    dns_query: str | None = Field(default=None, max_length=MAX_SHORT_STR)
 
     technique_ids: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     tags: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)

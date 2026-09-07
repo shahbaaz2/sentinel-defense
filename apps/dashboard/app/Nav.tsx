@@ -7,6 +7,7 @@ const SECTIONS = [
   { href: "/response-center", label: "Response Center" },
   { href: "/detection-coverage", label: "Detection Coverage" },
   { href: "/events", label: "Event Explorer" },
+  { href: "/data-sources", label: "Data Sources" },
   { href: "/audit", label: "Audit / Provenance" },
   { href: "/assurance", label: "System Assurance" },
 ];

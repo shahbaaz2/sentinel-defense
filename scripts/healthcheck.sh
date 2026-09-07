@@ -51,6 +51,9 @@ check "Response plans API reachable" "curl -fsS http://${API_HOST}:${API_PORT}/a
 check "Response execution enabled (kill switch)" \
   "[ \"\$(curl -fsS http://${API_HOST}:${API_PORT}/api/v1/system/assurance | python3 -c 'import json,sys;print(json.load(sys.stdin)[\"response_execution\"])')\" = \"ENABLED - BOUNDED\" ]" \
   0
+check "Integrations endpoint reachable (6 adapters)" \
+  "[ \"\$(curl -fsS http://${API_HOST}:${API_PORT}/api/v1/integrations | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')\" = \"6\" ]" \
+  1
 
 echo
 if [ "$FAIL" -ne 0 ]; then

@@ -81,9 +81,15 @@ class NormalizedEventRecord(Base):
 
     src_ip: Mapped[str | None] = mapped_column(default=None)
     dst_ip: Mapped[str | None] = mapped_column(default=None)
+    src_port: Mapped[int | None] = mapped_column(default=None)
+    dst_port: Mapped[int | None] = mapped_column(default=None)
     process_name: Mapped[str | None] = mapped_column(default=None)
     rule_id: Mapped[str | None] = mapped_column(default=None)
     """Rule/technique ID the SOURCE already attached, if any - not a Sentinel conclusion."""
+    dns_query: Mapped[str | None] = mapped_column(default=None)
+    """Phase 8: DNS query name for zeek.dns/suricata network events - kept as its own column
+    rather than folded into `summary` so NET-002 can pattern-match it deterministically without
+    parsing free text (see services/detection_engine/rules.py)."""
 
     technique_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     summary: Mapped[str]
@@ -377,3 +383,20 @@ class IngestionCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class IngestionAdapterStatus(Base):
+    """Phase 8: one row per (source, stream) recording the outcome of the most recent ingestion
+    attempt - the Data Sources UI's "last successful ingest"/"last error" fields read this, never
+    a transient `IngestionResult` from a single HTTP response (see services/event_ingestor/
+    service.py). A failed attempt updates `last_attempt_at`/`last_error` without touching
+    `last_success_at`, so "when did this last actually work" and "when did we last try" stay
+    genuinely distinct even after a run of consecutive failures."""
+
+    __tablename__ = "ingestion_adapter_status"
+
+    source: Mapped[str] = mapped_column(primary_key=True)
+    stream: Mapped[str] = mapped_column(primary_key=True)
+    last_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_error: Mapped[str | None] = mapped_column(default=None)

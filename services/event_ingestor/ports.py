@@ -38,4 +38,11 @@ class EventSourceAdapter(Protocol):
         *,
         since: datetime | None = None,
         cursor: str | None = None,
+        limit: int | None = None,
     ) -> EventBatch: ...
+
+    async def health(self) -> bool:
+        """True iff the source is currently reachable/usable. Never raises - a source that can't
+        be reached is UNHEALTHY, not an exception the caller has to catch (Phase 8: System
+        Assurance and the Data Sources page both call this directly)."""
+        ...

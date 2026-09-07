@@ -21,7 +21,17 @@ pytestmark = pytest.mark.integration
 SENTINEL_BASE_URL = "http://127.0.0.1:8080"
 DEMO_CONTROL_BASE_URL = "http://127.0.0.1:8100"
 TERMINAL_RUN_STATES = {"PASSED", "FAILED", "CANCELLED"}
-ALL_RULE_IDS = {"DET-001", "DET-002", "DET-003", "DET-004", "DET-005", "DET-006"}
+ALL_RULE_IDS = {
+    "DET-001",
+    "DET-002",
+    "DET-003",
+    "DET-004",
+    "DET-005",
+    "DET-006",
+    "NET-001",
+    "NET-002",
+    "NET-003",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +67,7 @@ async def _run_scenario(scenario_id: str) -> dict:
             await asyncio.sleep(0.5)
 
 
-async def test_coverage_lists_all_six_rules_with_no_fabricated_percentages():
+async def test_coverage_lists_all_nine_rules_with_no_fabricated_percentages():
     async with await _sentinel_client() as sentinel:
         coverage = (await sentinel.get("/api/v1/detection-coverage")).json()
 

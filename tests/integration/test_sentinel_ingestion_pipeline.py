@@ -17,8 +17,8 @@ from apps.missionnet.config import settings as missionnet_settings
 from apps.missionnet.seed import reset_and_seed as reset_missionnet
 from domain.db import Base, engine
 from domain.models import orm  # noqa: F401 - registers tables on Base.metadata
-from integrations.missionnet.adapter import missionnet_audit_adapter, missionnet_telemetry_adapter
 from services.detection_engine.engine import run_detection_engine
+from services.event_ingestor.registry import missionnet_registry
 from services.event_ingestor.reset import reset as reset_sentinel
 from services.event_ingestor.service import ingest_all, sync_missionnet_assets
 from services.incident_engine.engine import run_incident_correlation
@@ -54,11 +54,8 @@ async def _run_full_pipeline(sentinel_session_factory) -> dict:
         assets_synced = await sync_missionnet_assets(session, MISSIONNET_BASE_URL)
 
     async with sentinel_session_factory() as session:
-        adapters = {
-            "audit": missionnet_audit_adapter(MISSIONNET_BASE_URL),
-            "telemetry": missionnet_telemetry_adapter(MISSIONNET_BASE_URL),
-        }
-        ingestion_results = await ingest_all(session, adapters)
+        registry = missionnet_registry(MISSIONNET_BASE_URL)
+        ingestion_results = await ingest_all(session, registry)
 
     async with sentinel_session_factory() as session:
         detection_result = await run_detection_engine(session)

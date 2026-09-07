@@ -1,0 +1,37 @@
+id: SCN-NET-001
+version: 1.0.0
+name: Network Sensor Detection
+description: >
+  Phase 8 flagship for real network sensors: generates one bounded burst of safe, synthetic
+  HTTP/DNS lab traffic between ephemeral Docker containers on an isolated bridge network, captures
+  it to a pcap, then runs real Suricata and Zeek (also ephemeral, batch mode only) against that
+  pcap. Suricata's alert and Zeek's DNS evidence are both ingested through Sentinel's normal
+  adapter/normalizer/detection/incident pipeline - the same pipeline MissionNet-driven scenarios
+  use - and correlate into one incident via NET-001, NET-002, and NET-003. This scenario touches
+  no MissionNet state at all (see expected_observations.missionnet: []) - Sentinel core, Suricata,
+  and Zeek are exercised independently of the MissionNet lab. See docs/sensor-pipeline.md.
+risk_level: safe_lab_only
+preconditions:
+  missionnet_status: nominal
+steps:
+  - id: step-1
+    action: run_network_sensor_lab
+    parameters: {}
+expected_observations:
+  missionnet: []
+  sentinel:
+    detections:
+      - rule_id: NET-001
+      - rule_id: NET-002
+      - rule_id: NET-003
+    incidents:
+      min_count: 1
+success_conditions:
+  - missionnet_event_observed
+  - normalized_event_observed
+  - expected_detection_observed
+  - incident_created
+  - evidence_link_verified
+  - no_duplicate_on_replay
+reset:
+  strategy: lab_reset

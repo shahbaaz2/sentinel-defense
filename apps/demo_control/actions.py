@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from apps.demo_control.config import settings
+from services.sensor_lab.pipeline import SensorLabError, run_network_sensor_lab
 
 
 class ActionError(Exception):
@@ -144,6 +145,26 @@ async def snapshot_evidence(client: httpx.AsyncClient, target: str, parameters: 
     )
 
 
+async def run_network_sensor_lab_action(
+    client: httpx.AsyncClient, target: str, parameters: dict
+) -> dict:
+    """The one non-MissionNet action: generates safe synthetic lab traffic between ephemeral
+    Docker containers and runs real Suricata/Zeek against it (services/sensor_lab/pipeline.py).
+    `client`/`target` are unused - this step needs neither MissionNet nor a per-step target - kept
+    only so this function still satisfies `ActionFn`'s shared signature."""
+    try:
+        result = await run_network_sensor_lab()
+    except SensorLabError as exc:
+        raise ActionError("run_network_sensor_lab", str(exc)) from exc
+    return {
+        "pcap_path": result.pcap_path,
+        "suricata_alert_count": result.suricata_alert_count,
+        "zeek_conn_count": result.zeek_conn_count,
+        "zeek_dns_count": result.zeek_dns_count,
+        "zeek_http_count": result.zeek_http_count,
+    }
+
+
 ActionFn = Callable[[httpx.AsyncClient, str, dict[str, Any]], Awaitable[dict]]
 
 ACTIONS: dict[str, ActionFn] = {
@@ -156,4 +177,5 @@ ACTIONS: dict[str, ActionFn] = {
     "inject_telemetry": inject_telemetry,
     "access_record": access_record,
     "snapshot_evidence": snapshot_evidence,
+    "run_network_sensor_lab": run_network_sensor_lab_action,
 }

@@ -1,0 +1,15 @@
+name: windows_security
+description: >
+  Field mapping for Windows Security Event Log data indexed via Splunk's Windows TA
+  (Add-on for Microsoft Windows) - field names come from that add-on's own extraction, not CIM.
+time_field: _time
+host_field: ComputerName
+source_field: source
+sourcetype_field: sourcetype
+src_ip_field: IpAddress
+dst_ip_field: null
+user_field: Account_Name
+severity_field: null
+signature_field: EventCode
+rule_id_field: EventCode
+default_severity: medium

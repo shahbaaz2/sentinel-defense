@@ -84,6 +84,30 @@ Full design: `docs/response-executor.md`, `docs/verification-and-rollback.md`.
 4. It should PASS again with the same shape (5 detections, ≥3 incidents) but **different IDs** — the
    reset genuinely cleared prior state rather than reusing it.
 
+## Real network sensors: SCN-NET-001 (Phase 8)
+
+Full design: `docs/sensor-pipeline.md`, `docs/integrations.md`. Requires Docker (via Colima) and
+`SENTINEL_SURICATA_ENABLED=true` / `SENTINEL_ZEEK_ENABLED=true` in `.env` (both default `false` -
+see `RUNBOOK.md`'s "Network sensor pipeline" section for enabling them). This scenario touches no
+MissionNet state at all - it proves Sentinel's real-sensor path independently of the MissionNet lab.
+
+1. From Demo Control's home page, click **Run Scenario** on **SCN-NET-001** ("Network Sensor
+   Detection"). It takes roughly 10-15 seconds - real Docker containers actually run: an isolated
+   bridge network with a server/DNS-stub/client, a captured pcap, then real Suricata and real Zeek
+   analyzing it in batch mode.
+2. It should reach **PASSED** with 3+ detections (`NET-001`, `NET-002`, `NET-003`) and exactly one
+   incident, category `network-intrusion`.
+3. Open the resulting incident - `NET-003`'s presence proves genuine Suricata+Zeek cross-sensor
+   correlation, not just two sensors ingested side by side.
+4. Open http://127.0.0.1:3000/data-sources - Suricata and Zeek should read `ACTIVE` with a nonzero
+   event count and a recent "Last Successful Ingest" timestamp.
+5. Open http://127.0.0.1:3000/events?source=suricata (or `?source=zeek`) - Event Explorer's Rule
+   and Src → Dst columns show the real signature ID and IP pair from the actual pcap capture.
+6. **Reproducibility**: run SCN-NET-001 again - it resets first (clearing both the DB and the
+   generated `eve.json`/Zeek logs - see DECISIONS.md), then PASSes again with disjoint IDs.
+7. **Regression check**: run SCN-010 again afterward - it should show exactly its own 5 detections,
+   with no stray `NET-*` detections left over from the sensor run (the same reset guarantee).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -95,6 +119,8 @@ Full design: `docs/response-executor.md`, `docs/verification-and-rollback.md`.
 | `Failed to fetch` shown under a Run button | CORS blocked, or Demo Control API is down | `curl http://127.0.0.1:8100/health` |
 | Execution ends `FAILED`/`ROLLED_BACK` with a 404-shaped error in an action's `error_message` | MissionNet's `uvicorn` process predates a new `/lab/*` endpoint (no `--reload`) | Restart it: `lsof -ti :8090 \| xargs kill -9`, then `make missionnet` |
 | EXECUTE button returns 503 | `SENTINEL_RESPONSE_EXECUTION_ENABLED=false` (kill switch) | Set it `true` in `.env` and restart `make api` |
+| SCN-NET-001 fails with a `SensorLabError` | Docker/Colima not running, or a leftover container from a killed prior run | `docker info`; `docker rm -f sentinel-lab-server sentinel-lab-dns sentinel-lab-client; docker network rm sentinel-sensor-lab` |
+| SCN-NET-001 step succeeds but no detections appear | `SENTINEL_SURICATA_ENABLED`/`SENTINEL_ZEEK_ENABLED` still `false` | Set both `true` in `.env` and restart `make api` before running the scenario |
 
 ## Stop the demo stack
 
