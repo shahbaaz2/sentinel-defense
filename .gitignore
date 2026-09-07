@@ -30,3 +30,7 @@ models/*.safetensors
 
 # Colima/Docker local state
 infrastructure/compose/.data/
+
+# Phase 8: generated sensor-lab artifacts (pcaps, eve.json, Zeek logs) - never committed,
+# regenerated fresh by each network-sensor demo run
+var/sensor-lab/
