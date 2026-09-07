@@ -132,7 +132,7 @@ async def test_create_response_plan_for_eligible_playbook_persists_and_audits():
         plan = resp.json()
         assert plan["status"] == "AWAITING_APPROVAL"
         assert plan["policy_decision"] == "ALLOW"
-        assert plan["execution_status"] == "EXECUTION_NOT_ENABLED"
+        assert plan["execution_status"] == "NOT_EXECUTED"
         assert plan["playbook_id"] == "RP-001"
 
         audit = (
@@ -203,7 +203,7 @@ async def test_approve_response_plan_records_actor_and_timestamp():
         assert approved["status"] == "APPROVED"
         assert approved["approved_by"] == "m.osei"
         assert approved["approved_at"] is not None
-        assert approved["execution_status"] == "EXECUTION_NOT_ENABLED"
+        assert approved["execution_status"] == "NOT_EXECUTED"
 
         audit = (
             await api.get(
@@ -430,4 +430,4 @@ async def test_full_manual_workflow_with_ai_disabled():
         )
     assert approved.status_code == 200
     assert approved.json()["status"] == "APPROVED"
-    assert approved.json()["execution_status"] == "EXECUTION_NOT_ENABLED"
+    assert approved.json()["execution_status"] == "NOT_EXECUTED"

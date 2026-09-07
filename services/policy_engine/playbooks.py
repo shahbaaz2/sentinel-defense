@@ -26,8 +26,13 @@ SEVERITY_ORDER: dict[str, int] = {"info": 0, "low": 1, "medium": 2, "high": 3, "
 class PlaybookAction(BaseModel):
     action_id: str
     target_source: Literal["incident", "incident_asset", "incident_identity"]
-    """Where a future executor would resolve this action's target from - Phase 6 never resolves or
-    uses this beyond display; it exists so the catalog is execution-ready for a later phase."""
+    """Where the Phase 7 executor resolves this action's real target from - see
+    services/response_executor/targets.py."""
+    required: bool = True
+    """Phase 7: whether this action gates the plan's overall SUCCEEDED/FAILED result (blueprint
+    §13). A non-required action whose target cannot be resolved is SKIPPED, not failed, and never
+    blocks success or blocks pre-execution revalidation - see docs/response-executor.md for why
+    RP-005's `revoke_test_token` step is the one non-required action in this catalog."""
 
 
 class PlaybookRisk(BaseModel):

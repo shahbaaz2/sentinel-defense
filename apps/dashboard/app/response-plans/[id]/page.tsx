@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ResponsePlanActions } from "./ResponsePlanActions";
+import { ExecutionControls } from "./ExecutionControls";
 
 const API_BASE = process.env.SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
 
@@ -27,6 +28,11 @@ type ResponsePlan = {
   cancelled_at: string | null;
   scenario_id: string | null;
   execution_status: string;
+  executed_by: string | null;
+  execution_started_at: string | null;
+  execution_completed_at: string | null;
+  executor_version: string | null;
+  execution_block_reason: string | null;
 };
 
 type Incident = {
@@ -48,6 +54,25 @@ type Playbook = {
   risk: { mission_impact: string; reversibility: string };
 };
 
+type ActionResult = {
+  action_result_id: string;
+  action_index: number;
+  action_id: string;
+  required: boolean;
+  target_type: string | null;
+  target_id: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  status: "PENDING" | "SKIPPED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  result_metadata: Record<string, unknown>;
+  verification_status: "NOT_CHECKED" | "NOT_APPLICABLE" | "VERIFIED" | "FAILED";
+  verification_detail: Record<string, unknown>;
+  rollback_status: "NOT_APPLICABLE" | "PENDING" | "ROLLED_BACK" | "FAILED";
+  rolled_back_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+};
+
 async function getJSON<T>(path: string): Promise<T | null> {
   try {
     const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
@@ -58,33 +83,76 @@ async function getJSON<T>(path: string): Promise<T | null> {
   }
 }
 
-function StatusBanner({ status }: { status: string }) {
-  if (status === "APPROVED") {
-    return (
-      <div className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
-        APPROVED — EXECUTION NOT ENABLED IN PHASE 6
-      </div>
-    );
-  }
-  if (status === "REJECTED") {
+function StatusBanner({ plan }: { plan: ResponsePlan }) {
+  if (plan.status === "REJECTED") {
     return (
       <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
         REJECTED — no action was taken
       </div>
     );
   }
-  if (status === "CANCELLED") {
+  if (plan.status === "CANCELLED") {
     return (
       <div className="rounded border border-zinc-300 bg-zinc-100 px-3 py-2 text-sm font-semibold text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
         CANCELLED
       </div>
     );
   }
-  return (
-    <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-      PLANNED — NOT YET EXECUTED — AWAITING HUMAN APPROVAL
-    </div>
-  );
+  if (plan.status === "AWAITING_APPROVAL") {
+    return (
+      <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+        PLANNED — NOT YET EXECUTED — AWAITING HUMAN APPROVAL
+      </div>
+    );
+  }
+  // status === APPROVED - banner reflects the separate execution lifecycle
+  switch (plan.execution_status) {
+    case "NOT_EXECUTED":
+      return (
+        <div className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
+          APPROVED — READY TO EXECUTE (SYNTHETIC MISSIONNET LAB ONLY)
+        </div>
+      );
+    case "EXECUTING":
+    case "VERIFYING":
+      return (
+        <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300">
+          {plan.execution_status} — response in progress
+        </div>
+      );
+    case "SUCCEEDED":
+      return (
+        <div className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
+          RESPONSE SUCCEEDED — all mandatory actions completed and verified
+        </div>
+      );
+    case "FAILED":
+      return (
+        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+          RESPONSE FAILED
+        </div>
+      );
+    case "ROLLING_BACK":
+      return (
+        <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300">
+          ROLLING BACK
+        </div>
+      );
+    case "ROLLED_BACK":
+      return (
+        <div className="rounded border border-zinc-300 bg-zinc-100 px-3 py-2 text-sm font-semibold text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+          ROLLED BACK — actions reversed
+        </div>
+      );
+    case "ROLLBACK_FAILED":
+      return (
+        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+          ROLLBACK FAILED — manual investigation required
+        </div>
+      );
+    default:
+      return null;
+  }
 }
 
 export default async function ResponsePlanDetailPage(props: PageProps<"/response-plans/[id]">) {
@@ -99,9 +167,10 @@ export default async function ResponsePlanDetailPage(props: PageProps<"/response
     );
   }
 
-  const [incident, playbook] = await Promise.all([
+  const [incident, playbook, actions] = await Promise.all([
     getJSON<Incident>(`/api/v1/incidents/${plan.incident_id}`),
     getJSON<Playbook>(`/api/v1/playbooks/${plan.playbook_id}`),
+    getJSON<ActionResult[]>(`/api/v1/response-plans/${plan.response_plan_id}/actions`),
   ]);
 
   return (
@@ -117,7 +186,7 @@ export default async function ResponsePlanDetailPage(props: PageProps<"/response
           <p className="mt-1 font-mono text-xs text-zinc-500">{plan.response_plan_id}</p>
         </div>
 
-        <StatusBanner status={plan.status} />
+        <StatusBanner plan={plan} />
 
         {/* INCIDENT CONTEXT */}
         <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
@@ -187,7 +256,9 @@ export default async function ResponsePlanDetailPage(props: PageProps<"/response
             Planned Actions
           </h2>
           <p className="mb-3 text-xs text-zinc-500">
-            Declarative only in this phase - nothing below has executed or will execute.
+            {plan.execution_status === "NOT_EXECUTED"
+              ? "Nothing below has executed yet."
+              : "See Response Execution below for what actually ran."}
           </p>
           <ul className="flex flex-col gap-2">
             {playbook?.actions.map((a) => (
@@ -208,7 +279,7 @@ export default async function ResponsePlanDetailPage(props: PageProps<"/response
           </ul>
           {playbook && playbook.verification.length > 0 && (
             <p className="mt-3 text-xs text-zinc-500">
-              Verification (would confirm success): {playbook.verification.join(", ")}
+              Verification (confirms success): {playbook.verification.join(", ")}
             </p>
           )}
           {playbook && playbook.rollback.length > 0 && (
@@ -284,6 +355,105 @@ export default async function ResponsePlanDetailPage(props: PageProps<"/response
             )}
           </dl>
           <ResponsePlanActions planId={plan.response_plan_id} status={plan.status} />
+        </section>
+
+        {/* RESPONSE EXECUTION */}
+        <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+            Response Execution
+          </h2>
+          <p className="mb-3 text-xs text-zinc-500">
+            Every entry below comes from a persisted execution record - nothing here is animated
+            or simulated. Executor {plan.executor_version ?? "—"}.
+            {" "}<span className="font-semibold uppercase">SYNTHETIC MISSIONNET LAB ONLY.</span>
+          </p>
+
+          {plan.execution_block_reason && (
+            <p className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+              Last execute attempt was blocked: {plan.execution_block_reason}
+            </p>
+          )}
+
+          {plan.execution_started_at && (
+            <ul className="mb-4 flex flex-col gap-1 font-mono text-xs">
+              <li>{new Date(plan.execution_started_at).toLocaleTimeString()} — Execution started</li>
+              {actions
+                ?.filter((a) => a.status !== "PENDING")
+                .map((a) => (
+                  <li key={a.action_result_id} className="flex flex-col">
+                    <span>
+                      {a.completed_at && new Date(a.completed_at).toLocaleTimeString()}{"  "}
+                      {a.action_id.padEnd(28, " ")}{" "}
+                      <span
+                        className={
+                          a.status === "SUCCEEDED"
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : a.status === "FAILED"
+                              ? "text-red-600 dark:text-red-400"
+                              : "text-zinc-500"
+                        }
+                      >
+                        {a.status}
+                      </span>
+                      {a.target_id && <span className="text-zinc-400"> ({a.target_id})</span>}
+                    </span>
+                    {a.status === "SUCCEEDED" && a.verification_status !== "NOT_CHECKED" && (
+                      <span className="pl-6 text-zinc-500">
+                        └─ verification:{" "}
+                        <span
+                          className={
+                            a.verification_status === "VERIFIED"
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : a.verification_status === "FAILED"
+                                ? "text-red-600 dark:text-red-400"
+                                : ""
+                          }
+                        >
+                          {a.verification_status}
+                        </span>
+                      </span>
+                    )}
+                    {a.rollback_status !== "NOT_APPLICABLE" && (
+                      <span className="pl-6 text-zinc-500">
+                        └─ rollback:{" "}
+                        <span
+                          className={
+                            a.rollback_status === "ROLLED_BACK"
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : a.rollback_status === "FAILED"
+                                ? "text-red-600 dark:text-red-400"
+                                : ""
+                          }
+                        >
+                          {a.rollback_status}
+                        </span>
+                      </span>
+                    )}
+                    {a.error_message && (
+                      <span className="pl-6 text-red-500">└─ error: {a.error_message}</span>
+                    )}
+                  </li>
+                ))}
+              {plan.execution_completed_at && (
+                <li className="mt-2 font-semibold">
+                  {new Date(plan.execution_completed_at).toLocaleTimeString()} — RESPONSE{" "}
+                  {plan.execution_status}
+                </li>
+              )}
+            </ul>
+          )}
+
+          {!plan.execution_started_at && (
+            <p className="mb-3 text-xs text-zinc-500">No execution has been attempted yet.</p>
+          )}
+
+          <ExecutionControls
+            planId={plan.response_plan_id}
+            planStatus={plan.status}
+            executionStatus={plan.execution_status}
+            reversible={plan.reversible}
+            playbookName={playbook?.name ?? plan.playbook_id}
+          />
         </section>
       </main>
     </div>

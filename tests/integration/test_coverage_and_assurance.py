@@ -121,8 +121,18 @@ async def test_assurance_reports_truthful_state_no_fake_certifications():
         assert assurance["local_llm_runtime"] == "NOT ENABLED"
     else:
         assert assurance["local_llm_runtime"] != "NOT ENABLED"
-    assert assurance["response_authority"] == "NONE"
-    assert assurance["rag_status"] == "NOT ENABLED - Phase 6"
+    # Phase 7: response_authority is truthfully "bounded" now that a real, human-gated executor
+    # exists - no longer "NONE" (that was accurate only through Phase 6). See DECISIONS.md.
+    assert "BOUNDED" in assurance["response_authority"]
+    assert "AUTONOMY" in assurance["response_authority"]
+    assert assurance["rag_status"] == "NOT ENABLED"
+    assert assurance["response_planning"] == "ENABLED"
+    assert assurance["policy_engine"] == "OPERATIONAL"
+    assert assurance["human_approval"] == "ENABLED"
+    assert assurance["response_execution"] in ("ENABLED - BOUNDED", "DISABLED")
+    assert assurance["verification"] == "ENABLED"
+    assert assurance["rollback"] == "ENABLED FOR SUPPORTED ACTIONS"
+    assert assurance["autonomous_response"] == "DISABLED"
     assert assurance["missionnet_adapter"] == "ONLINE"
     assert assurance["sentinel_api"] == "ONLINE"
     assert assurance["postgresql"] == "ONLINE"

@@ -71,6 +71,7 @@ type ResponsePlanSummary = {
   response_plan_id: string;
   playbook_id: string;
   status: string;
+  execution_status: string;
   created_at: string;
 };
 

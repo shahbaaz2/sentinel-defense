@@ -43,6 +43,39 @@ make health                 # confirm everything is up
    keyed by identity, not the shared asset that DET-002/DET-004/DET-005 correlate on).
 4. Click through to any resulting incident from the run page's "Resulting Incidents" section.
 
+## Contain it (Phase 7 - the full recommend -> approve -> execute -> verify chain)
+
+Full design: `docs/response-executor.md`, `docs/verification-and-rollback.md`.
+
+1. On the asset-degradation incident (DET-002+DET-004+DET-005 on `mission-data-api-01`), click
+   **ANALYZE WITH LOCAL AI** - it recommends **RP-005**. The Response Planning section shows it
+   pre-selected as `ELIGIBLE — HUMAN APPROVAL REQUIRED`.
+2. Click **CREATE RESPONSE PLAN**, then open the plan's own page. Review all 7 sections (Incident
+   Context, Recommended Playbook, Why This Playbook, Planned Actions, Policy Checks, Mission Impact,
+   Approval) - nothing has happened to MissionNet yet.
+3. Click **APPROVE**. The banner changes to **APPROVED — READY TO EXECUTE (SYNTHETIC MISSIONNET LAB
+   ONLY)** and an **EXECUTE APPROVED PLAN** button appears - execution is still a separate action,
+   not automatic.
+4. Click **EXECUTE APPROVED PLAN** and confirm the dialog. The banner flips to **RESPONSE SUCCEEDED
+   — all mandatory actions completed and verified**, and the new **Response Execution** section shows
+   the real timeline: `quarantine_workload` SUCCEEDED/VERIFIED, `revoke_test_token` SKIPPED (this
+   incident has no identity/token signal), `preserve_evidence` SUCCEEDED/VERIFIED,
+   `request_replacement_instance` SUCCEEDED/VERIFIED.
+5. Cross-check the containment is real, not just claimed:
+   - MissionNet Operations Console (:3100): system status **CONTAINMENT_IN_PROGRESS**,
+     `mission-data-api-01` shown `quarantined`, a new `mission-data-api-01-replacement` asset shown
+     `nominal`.
+   - Incident Detail: `Containment: VERIFIED`, and the incident's own status is still whatever it was
+     before (execution never auto-resolves an incident).
+   - Response Center (`?view=COMPLETED`): the plan is bucketed there with a **ROLLBACK** action
+     available (the plan is `reversible`).
+   - Audit / Provenance: the full `response_plan.execution_started` -> `action_started`/
+     `action_result`/`action_verified` (×4) -> `execution_succeeded` chain.
+6. Optionally, click **ROLLBACK** on the Response Center or Plan Detail page to restore
+   `mission-data-api-01` to `nominal`/`normal` and confirm the console reflects it - rollback for
+   actions with no handler (`preserve_evidence`, `request_replacement_instance`) correctly shows
+   `NOT_APPLICABLE`, not a false claim of reversal.
+
 ## Verify reproducibility
 
 1. From the run page, click **Reset Lab**.
@@ -60,6 +93,8 @@ make health                 # confirm everything is up
 | Run FAILED on precondition | MissionNet wasn't nominal and the scenario didn't reset first | Only relevant for `reset.strategy: none` scenarios (none of the shipped ones use this in normal operation) |
 | Buttons on the Demo Control page do nothing | Hydration or CORS issue (see DECISIONS.md) | Confirm `apps/demo-control-console/next.config.ts` has `allowedDevOrigins`, and Demo Control's API has CORS enabled for :3200 |
 | `Failed to fetch` shown under a Run button | CORS blocked, or Demo Control API is down | `curl http://127.0.0.1:8100/health` |
+| Execution ends `FAILED`/`ROLLED_BACK` with a 404-shaped error in an action's `error_message` | MissionNet's `uvicorn` process predates a new `/lab/*` endpoint (no `--reload`) | Restart it: `lsof -ti :8090 \| xargs kill -9`, then `make missionnet` |
+| EXECUTE button returns 503 | `SENTINEL_RESPONSE_EXECUTION_ENABLED=false` (kill switch) | Set it `true` in `.env` and restart `make api` |
 
 ## Stop the demo stack
 

@@ -12,6 +12,7 @@ type ResponsePlanSummary = {
   response_plan_id: string;
   playbook_id: string;
   status: string;
+  execution_status: string;
   created_at: string;
 };
 type PolicyDecision = {
@@ -92,11 +93,32 @@ export function ResponsePlanCreator({
     }
   }
 
+  const latestPlan = initialResponsePlans[0] ?? null;
+
   return (
     <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500">
         Response Planning
       </h2>
+
+      {latestPlan && (
+        <dl className="mb-4 grid grid-cols-2 gap-y-1 rounded border border-zinc-200 p-3 text-xs sm:grid-cols-4 dark:border-zinc-800">
+          <dt className="text-zinc-500">Response Playbook</dt>
+          <dd className="font-mono">{latestPlan.playbook_id}</dd>
+          <dt className="text-zinc-500">Approval</dt>
+          <dd className="font-semibold uppercase">{latestPlan.status}</dd>
+          <dt className="text-zinc-500">Execution</dt>
+          <dd className="font-semibold uppercase">{latestPlan.execution_status}</dd>
+          <dt className="text-zinc-500">Containment</dt>
+          <dd className="font-semibold uppercase">
+            {latestPlan.execution_status === "SUCCEEDED"
+              ? "VERIFIED"
+              : latestPlan.execution_status === "NOT_EXECUTED"
+                ? "NOT YET EXECUTED"
+                : "NOT VERIFIED"}
+          </dd>
+        </dl>
+      )}
 
       {aiRecommendedPlaybookId && (
         <p className="mb-2 text-sm">
@@ -172,7 +194,8 @@ export function ResponsePlanCreator({
                 >
                   {p.response_plan_id.slice(0, 13)}…
                 </Link>{" "}
-                {p.playbook_id} — <span className="uppercase">{p.status}</span>
+                {p.playbook_id} — <span className="uppercase">{p.status}</span> /{" "}
+                <span className="uppercase">{p.execution_status}</span>
               </li>
             ))}
           </ul>

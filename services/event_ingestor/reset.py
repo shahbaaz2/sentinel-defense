@@ -9,6 +9,7 @@ from sqlalchemy import delete
 
 from domain.db import SessionLocal
 from domain.models.orm import (
+    ActionResult,
     AIAssessment,
     AuditLogEntry,
     Detection,
@@ -25,9 +26,11 @@ from domain.models.orm import (
 )
 
 _DELETE_ORDER = (
-    # ResponsePlan FKs into both AIAssessment and Incident - must precede them both. Whenever a
-    # new table gets a foreign key into incidents/detections/normalized_events/ai_assessments,
-    # add it here BEFORE its target - this has been a real, recurring bug (see DECISIONS.md).
+    # ActionResult FKs into ResponsePlan, which FKs into both AIAssessment and Incident - each
+    # must precede what it points to. Whenever a new table gets a foreign key into
+    # incidents/detections/normalized_events/ai_assessments/response_plans, add it here BEFORE
+    # its target - this has been a real, recurring bug (see DECISIONS.md).
+    ActionResult,
     ResponsePlan,
     AIAssessment,
     IncidentNote,

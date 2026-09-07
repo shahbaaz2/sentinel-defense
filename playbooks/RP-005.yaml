@@ -25,6 +25,10 @@ actions:
     target_source: incident_asset
   - action_id: revoke_test_token
     target_source: incident_identity
+    required: false  # not every multi-signal incident this playbook is eligible for has an
+                      # implicated identity/token in its evidence (e.g. a pure asset-degradation +
+                      # telemetry-anomaly incident never touches identity data at all) - see
+                      # DECISIONS.md and docs/response-executor.md.
   - action_id: preserve_evidence
     target_source: incident
   - action_id: request_replacement_instance

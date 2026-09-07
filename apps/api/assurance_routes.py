@@ -78,5 +78,8 @@ async def system_assurance(
         postgresql="ONLINE" if postgres_ok else "OFFLINE",
         demo_control="ONLINE" if demo_control_ok else "OFFLINE",
         local_llm_runtime=local_llm_runtime,
+        response_execution=(
+            "ENABLED - BOUNDED" if settings.response_execution_enabled else "DISABLED"
+        ),
         integrations=IntegrationStatusOut(),
     )

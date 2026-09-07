@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ResponseCenterActions } from "./ResponseCenterActions";
+import { ApprovalActions, ExecuteAction, RollbackAction } from "./ResponseCenterActions";
 
 const API_BASE = process.env.SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
 
@@ -11,6 +11,7 @@ type ResponsePlan = {
   risk_level: string;
   reversible: boolean;
   status: string;
+  execution_status: string;
   created_at: string;
 };
 
@@ -31,20 +32,42 @@ async function getJSON<T>(path: string): Promise<T | null> {
   }
 }
 
-const STATUSES = ["AWAITING_APPROVAL", "APPROVED", "REJECTED", "CANCELLED"];
+type ViewKey = "AWAITING_APPROVAL" | "APPROVED" | "EXECUTING" | "COMPLETED" | "FAILED" | "REJECTED" | "CANCELLED";
+
+const VIEWS: { key: ViewKey; label: string }[] = [
+  { key: "AWAITING_APPROVAL", label: "AWAITING APPROVAL" },
+  { key: "APPROVED", label: "APPROVED / READY" },
+  { key: "EXECUTING", label: "EXECUTING" },
+  { key: "COMPLETED", label: "COMPLETED" },
+  { key: "FAILED", label: "FAILED / ROLLED BACK" },
+  { key: "REJECTED", label: "REJECTED" },
+  { key: "CANCELLED", label: "CANCELLED" },
+];
+
+function viewFor(plan: ResponsePlan): ViewKey {
+  if (plan.status === "REJECTED") return "REJECTED";
+  if (plan.status === "CANCELLED") return "CANCELLED";
+  if (plan.status === "AWAITING_APPROVAL") return "AWAITING_APPROVAL";
+  // status === APPROVED from here on - bucket by execution_status
+  if (["EXECUTING", "VERIFYING", "ROLLING_BACK"].includes(plan.execution_status)) return "EXECUTING";
+  if (plan.execution_status === "SUCCEEDED") return "COMPLETED";
+  if (["FAILED", "ROLLED_BACK", "ROLLBACK_FAILED"].includes(plan.execution_status)) return "FAILED";
+  return "APPROVED"; // NOT_EXECUTED
+}
 
 export default async function ResponseCenterPage(props: PageProps<"/response-center">) {
   const sp = await props.searchParams;
-  const status = typeof sp.status === "string" ? sp.status : "AWAITING_APPROVAL";
+  const view = (typeof sp.view === "string" ? sp.view : "AWAITING_APPROVAL") as ViewKey;
 
-  const plans = (await getJSON<ResponsePlan[]>(`/api/v1/response-plans?status=${status}`)) ?? [];
+  const allPlans = (await getJSON<ResponsePlan[]>("/api/v1/response-plans")) ?? [];
+  const plans = allPlans.filter((p) => viewFor(p) === view);
   const incidents = await Promise.all(
     plans.map((p) => getJSON<Incident>(`/api/v1/incidents/${p.incident_id}`)),
   );
 
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex w-full max-w-5xl flex-col gap-6 px-8 py-16">
+      <main className="flex w-full max-w-6xl flex-col gap-6 px-8 py-16">
         <div>
           <Link href="/" className="text-sm text-zinc-500 hover:underline">
             ← Mission Cyber Posture
@@ -53,30 +76,33 @@ export default async function ResponseCenterPage(props: PageProps<"/response-cen
             Response Center
           </h1>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-            Policy-evaluated response plans awaiting human review. Nothing here executes anything -
-            approving a plan only records that a human authorized it (
-            <span className="font-mono">execution_status: EXECUTION_NOT_ENABLED</span>).
+            Policy-evaluated response plans, human approval, and bounded execution against the
+            synthetic MissionNet lab only. Approval never auto-executes - execution is always a
+            separate, explicit human action.
           </p>
         </div>
 
-        <div className="flex gap-2 text-sm">
-          {STATUSES.map((s) => (
-            <Link
-              key={s}
-              href={`/response-center?status=${s}`}
-              className={`rounded border px-2 py-1 text-xs ${
-                s === status
-                  ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
-                  : "border-zinc-300 text-zinc-600 hover:border-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
-              }`}
-            >
-              {s}
-            </Link>
-          ))}
+        <div className="flex flex-wrap gap-2 text-sm">
+          {VIEWS.map((v) => {
+            const count = allPlans.filter((p) => viewFor(p) === v.key).length;
+            return (
+              <Link
+                key={v.key}
+                href={`/response-center?view=${v.key}`}
+                className={`rounded border px-2 py-1 text-xs ${
+                  v.key === view
+                    ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
+                    : "border-zinc-300 text-zinc-600 hover:border-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
+                }`}
+              >
+                {v.label} ({count})
+              </Link>
+            );
+          })}
         </div>
 
         {plans.length === 0 && (
-          <p className="text-sm text-zinc-500">No response plans with status {status}.</p>
+          <p className="text-sm text-zinc-500">No response plans in {view.replace("_", " ")}.</p>
         )}
 
         {plans.length > 0 && (
@@ -91,16 +117,19 @@ export default async function ResponseCenterPage(props: PageProps<"/response-cen
                   <th className="px-3 py-2">Playbook</th>
                   <th className="px-3 py-2">Source</th>
                   <th className="px-3 py-2">Mission Impact</th>
-                  <th className="px-3 py-2">Reversible</th>
-                  <th className="px-3 py-2">Created</th>
-                  {status === "AWAITING_APPROVAL" && <th className="px-3 py-2">Actions</th>}
+                  <th className="px-3 py-2">Approval</th>
+                  <th className="px-3 py-2">Execution</th>
+                  <th className="px-3 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {plans.map((plan, i) => {
                   const incident = incidents[i];
                   return (
-                    <tr key={plan.response_plan_id} className="border-t border-zinc-200 dark:border-zinc-800">
+                    <tr
+                      key={plan.response_plan_id}
+                      className="border-t border-zinc-200 dark:border-zinc-800"
+                    >
                       <td className="px-3 py-2 font-mono text-xs">
                         <Link
                           href={`/response-plans/${plan.response_plan_id}`}
@@ -128,15 +157,24 @@ export default async function ResponseCenterPage(props: PageProps<"/response-cen
                         {plan.recommendation_source}
                       </td>
                       <td className="px-3 py-2 text-xs uppercase">{plan.risk_level}</td>
-                      <td className="px-3 py-2 text-xs">{plan.reversible ? "yes" : "no"}</td>
-                      <td className="px-3 py-2 text-xs text-zinc-500">
-                        {new Date(plan.created_at).toLocaleString()}
+                      <td className="px-3 py-2 text-xs uppercase">{plan.status}</td>
+                      <td className="px-3 py-2 font-mono text-xs uppercase">
+                        {plan.execution_status}
                       </td>
-                      {status === "AWAITING_APPROVAL" && (
-                        <td className="px-3 py-2">
-                          <ResponseCenterActions planId={plan.response_plan_id} />
-                        </td>
-                      )}
+                      <td className="px-3 py-2">
+                        {view === "AWAITING_APPROVAL" && (
+                          <ApprovalActions planId={plan.response_plan_id} />
+                        )}
+                        {view === "APPROVED" && <ExecuteAction planId={plan.response_plan_id} />}
+                        {view === "COMPLETED" && plan.reversible && (
+                          <RollbackAction planId={plan.response_plan_id} />
+                        )}
+                        {view === "FAILED" &&
+                          plan.reversible &&
+                          plan.execution_status === "FAILED" && (
+                            <RollbackAction planId={plan.response_plan_id} />
+                          )}
+                      </td>
                     </tr>
                   );
                 })}

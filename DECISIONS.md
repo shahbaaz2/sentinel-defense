@@ -4,6 +4,140 @@ ADR-style log of durable engineering decisions. Newest first. Each entry: date, 
 
 ---
 
+## 2026-09-06 — Phase 7: `execution_status` is a second, independent field - never folded into `status`
+
+Phase 6 deliberately kept a single `status` column because approval and execution weren't yet
+separable concepts (see the Phase 6 entry below on this exact question, which explicitly flagged
+"revisit if a later phase's execution status genuinely needs to diverge from approval status"). Phase
+7 is that later phase: a plan can be `APPROVED` and simultaneously `NOT_EXECUTED`, `EXECUTING`,
+`SUCCEEDED`, `FAILED`, or `ROLLED_BACK` - five genuinely different real-world states that all share
+one `status` value. Rather than overload `status`'s vocabulary (which would make "is this plan
+approved" a substring check against values like `EXECUTING`), `ResponsePlan` gained a second column,
+`execution_status`, with its own independent state machine. `status` still answers exactly one
+question - did a human approve this plan - and `execution_status` answers a completely different one
+- what has actually happened to MissionNet as a result. The API layer (`execution_routes.py`) and UI
+(`viewFor()` in `response-center/page.tsx`) both compute derived views from the pair, never from
+either field alone.
+
+## 2026-09-06 — Phase 7: execution is a second, explicit human action - never automatic on approval
+
+Approving a `ResponsePlan` (`POST /response-plans/{id}/approve`) only ever sets `status="APPROVED"`;
+no code path anywhere touches `execution_status` as a side effect of approval. A human must issue a
+separate `POST /response-plans/{id}/execute` call, and the dashboard's `ExecutionControls` component
+requires an explicit confirmation dialog naming the playbook and actor before making that call. This
+is the phase's central safety property, not an implementation detail: the LLM's role stops at
+recommending a playbook ID (Phase 5/6), the policy engine's role stops at declaring a playbook
+eligible (Phase 6), and now the executor's role never begins until a human takes a second, distinct
+action after having already seen the fully-approved plan. Collapsing approve+execute into one click
+was considered (it would make the flagship demo one step shorter) and rejected - it would erase the
+one place in the whole system where "the AI queued this, a human approved it" and "MissionNet's real
+state actually changed" are forced to be observably different events.
+
+## 2026-09-06 — Phase 7: `required: bool` on `PlaybookAction` governs success/skip, not resolvability
+
+RP-005 (Multi-Signal Incident Containment) is eligible across four different incident categories
+with structurally different evidence shapes - some are purely asset-based with no identity/token in
+evidence, some are identity-based with no degraded asset. Its `revoke_test_token` step therefore
+can't always resolve a target, even for a genuinely eligible incident. Rather than either (a) blocking
+execution whenever any action's target is unresolvable, which would make RP-005 permanently
+unexecutable for asset-only incidents, or (b) silently treating every unresolvable target as success,
+which would let a plan claim `SUCCEEDED` while a token that should have been revoked never was, each
+`PlaybookAction` gained a `required: bool = True` field (`services/policy_engine/playbooks.py`).
+Only `revoke_test_token` in RP-005 is `required: false`. The executor's rule: an unresolvable
+`required=false` target action is `SKIPPED` and never blocks or fails the plan; an unresolvable
+`required=true` target blocks execution before anything runs; and the plan's overall `SUCCEEDED`
+determination only ever considers `required=true` actions' status and verification. Verified live:
+the SCN-010 flagship incident (asset-only, no identity signal) executed RP-005 to `SUCCEEDED` with
+`revoke_test_token` correctly `SKIPPED`, not `FAILED`.
+
+## 2026-09-06 — Phase 7: targets resolve twice - once to decide whether to block, once per action to run
+
+Every action's target is resolved (`services/response_executor/targets.py::resolve_target`) from
+trusted stored context only: the incident's own linked `NormalizedEventRecord`s (for a user/token) or
+its own `primary_asset_id`/evidence (for an asset) - never from the action definition, never from
+free-form input. Resolution happens twice for a reason. First, an up-front pass before any action
+runs decides whether execution should even start (a `required=true` action with no resolvable target
+blocks the whole plan via `_block()`, before `execution_status` ever leaves `NOT_EXECUTED`). Second,
+immediately before each action actually executes, its target is resolved again, fresh, using the
+plan's own in-progress results so far. This second resolution is not redundant - it's what let a real
+bug get caught and fixed this phase (see "real bugs found" below): `verify_service_health`'s target
+depends on whether `request_replacement_instance` already ran earlier in the *same* execution, which
+an up-front-only resolution computed before any action ran could never see.
+
+## 2026-09-06 — Phase 7: verification always re-reads real MissionNet state, never trusts the action's own HTTP 200
+
+`services/response_executor/verifier.py` has 8 functions, one per playbook `expected_verification`
+value, and every one of them makes its own independent `GET` call against MissionNet after the
+action already ran - `verify_service_health` re-reads the replacement asset's status, `token_invalid`
+re-reads the token's `valid` flag, and so on. An action handler returning HTTP 200 proves the *request*
+succeeded, not that the state change actually took effect or is still true a moment later - conflating
+the two was exactly the failure mode this phase's verification requirement (blueprint §12) exists to
+rule out. This is also why resuming a crashed plan re-verifies every previously-`SUCCEEDED` action
+rather than trusting its persisted `verification_status`: a test that inserted a fake "already
+succeeded and verified" `ActionResult` without actually calling MissionNet's suspend endpoint was
+correctly caught by this design (verification failed, since the user genuinely wasn't suspended) -
+fixed by making the test actually perform the action first, not by weakening verification.
+
+## 2026-09-06 — Phase 7: rollback claims `NOT_APPLICABLE`, never a false `ROLLED_BACK`
+
+`services/response_executor/rollback.py::ROLLBACK_HANDLERS` covers only 4 of the 8 registered
+actions - `preserve_evidence` (undoing a snapshot isn't meaningful), `request_replacement_instance`
+(a provisioned replacement asset is a real Phase-7-forward fact, not a mistake to undo), and
+`verify_service_health` (a read-only check has no state to reverse) intentionally have no handler.
+When `_run_rollback` reaches an action with no registered handler, it sets
+`rollback_status="NOT_APPLICABLE"` and moves on - it never marks an action `ROLLED_BACK` unless a
+handler actually ran and MissionNet's state actually changed back. This mirrors the same principle as
+verification: a status field must only ever describe something that was actually observed to happen,
+never something assumed. `rollback_rotate_test_token` is the one handler that reverses two facts at
+once (revokes the new, rotated token AND reactivates the original) using `old_token_id`/`new_token_id`
+persisted in the original action's own `result_metadata` - proof that idempotent, deterministic child
+IDs (`{token_id}-rotated`) are enough to make rollback correct without a separate "undo log."
+
+## 2026-09-06 — Phase 7: `ActionResult` rows keyed by `(response_plan_id, action_index)` make resume idempotent by construction
+
+Rather than adding a "has this plan been partially executed" flag or a separate resume code path, the
+executor's main loop always runs the same way: for each action index, check whether an `ActionResult`
+already exists with status `SUCCEEDED`/`SKIPPED`, and if so, move on without calling MissionNet again.
+A crash between actions, a duplicate `execute` call from a double-clicked button, or a genuine
+retry after a transient MissionNet outage are all the identical code path - there is no special
+"resuming" state to get wrong. The unique constraint on `(response_plan_id, action_index)` makes a
+duplicate `ActionResult` for the same action structurally impossible at the database level, not just
+avoided by application logic. Verified live: calling `execute` twice on an already-`SUCCEEDED` plan
+left the action count unchanged at 4.
+
+## 2026-09-06 — Phase 7: the executor imports `services.ai_analyst.evidence`, not `ai.providers` - documented, not accidental
+
+`services/response_executor/executor.py::_revalidate` calls `build_evidence_pack` and
+`evaluate_policy` again immediately before execution, to catch an incident that stopped being
+eligible between approval and execution (e.g. it was resolved, or a playbook was disabled, in the
+interim). `build_evidence_pack` lives in `services/ai_analyst/evidence.py`, which makes it, by path,
+look like an AI-package import - but the function itself only reads `NormalizedEventRecord`/
+`Detection`/`Incident` rows and returns a plain dataclass; it never touches `ai.providers`, never
+calls a model, and Phase 6's `policy_engine.service` already relied on this exact same function for
+the identical reason. `tests/adversarial/test_executor_ai_isolation.py` encodes this distinction
+explicitly: `FORBIDDEN_MODULE_PREFIXES` names `ai.providers`, `ai.schemas`, and
+`services.ai_analyst.service` (the actual LLM-orchestrating module) but deliberately excludes
+`services.ai_analyst.evidence`, with an inline comment and a dedicated positive test asserting the
+evidence import IS present while the two forbidden ones are NOT - so a future reader (or reviewer)
+doesn't "fix" this into a wholesale `services.ai_analyst` ban that would break revalidation.
+
+## 2026-09-06 — Real bugs found and fixed this phase (both caught by testing, not shipped)
+
+1. **Stale MissionNet server.** The `uvicorn` process serving MissionNet had been running since a
+   much earlier phase without `--reload` (see the existing entry below on why `--reload` isn't
+   default for lab servers) and never picked up the 5 new `/lab/*` endpoints this phase added. The
+   first live execution attempt 404'd on `request_replacement_instance` and correctly rolled back -
+   the executor behaved exactly as designed given a genuinely broken dependency. Fixed by restarting
+   the process; not a code bug, but a re-confirmation of the same operational lesson from Phase 5/6.
+2. **Target-resolution timing bug** (a genuine executor bug, not a test artifact). Targets were
+   originally resolved once, entirely up front, before any action ran. `verify_service_health`'s
+   target-preference logic (prefer a same-plan `request_replacement_instance` result over the
+   original, still-quarantined asset) therefore could never see that action's outcome, since it
+   hadn't happened yet at resolution time - `SUCCEEDED` plans were incorrectly ending up
+   `ROLLED_BACK`. Fixed in `executor.py` by re-resolving each action's target immediately before it
+   runs (see the target-resolution entry above); the up-front pass is now used only to decide whether
+   to block execution before it starts.
+
 ## 2026-09-06 — Phase 6: `allowed_asset_types` matches MissionNet's `mission_role`, not Sentinel's
 `asset_type`
 

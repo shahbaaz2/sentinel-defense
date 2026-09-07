@@ -47,6 +47,10 @@ check "Knowledge bundle present" "[ -n \"${SENTINEL_KNOWLEDGE_BUNDLE:-}\" ]" 0
 check "Playbook catalog loads (5 playbooks)" \
   "[ \"\$(curl -fsS http://${API_HOST}:${API_PORT}/api/v1/playbooks | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')\" = \"5\" ]" \
   1
+check "Response plans API reachable" "curl -fsS http://${API_HOST}:${API_PORT}/api/v1/response-plans" 1
+check "Response execution enabled (kill switch)" \
+  "[ \"\$(curl -fsS http://${API_HOST}:${API_PORT}/api/v1/system/assurance | python3 -c 'import json,sys;print(json.load(sys.stdin)[\"response_execution\"])')\" = \"ENABLED - BOUNDED\" ]" \
+  0
 
 echo
 if [ "$FAIL" -ne 0 ]; then

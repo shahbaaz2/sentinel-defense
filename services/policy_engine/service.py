@@ -82,7 +82,7 @@ async def create_response_plan(
         reversible=playbook.reversible,
         status="AWAITING_APPROVAL",
         scenario_id=pack.scenario_id,
-        execution_status="EXECUTION_NOT_ENABLED",
+        execution_status="NOT_EXECUTED",
     )
     session.add(plan)
 

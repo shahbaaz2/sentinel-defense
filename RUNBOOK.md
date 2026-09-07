@@ -238,9 +238,67 @@ for the full design.
    analyst pick one, create a plan, and approve it - the entire response-planning flow requires no
    LLM at all. Re-enable AI afterward the same way.
 
-9. **Confirm nothing was executed.** Every approved plan's `execution_status` is
-   `EXECUTION_NOT_ENABLED` - `grep`/`curl` any plan and confirm; there is no code path in this
-   phase that can set it to anything else.
+9. **Confirm nothing was executed.** Every approved plan's `execution_status` is `NOT_EXECUTED`
+   until a separate, explicit execute action is taken - see "Response execution, verification, and
+   rollback (Phase 7)" below.
+
+## Response execution, verification, and rollback (Phase 7)
+
+Execution is always a second, explicit human action, separate from approval - see
+`docs/response-executor.md` and `docs/verification-and-rollback.md` for the full design.
+`SENTINEL_RESPONSE_EXECUTION_ENABLED=true` in `.env` is a kill switch; set it `false` and restart
+`make api` to disable the execute/rollback endpoints entirely (they return 503) without touching
+approval.
+
+1. **Approve a plan first** (see step 6 above) - the EXECUTE button only appears on
+   `/response-plans/<id>` once `status == APPROVED` and `execution_status == NOT_EXECUTED`.
+
+2. **Execute it.** Click **EXECUTE APPROVED PLAN** (confirm the dialog naming the playbook and
+   actor) or:
+   ```bash
+   curl -s -X POST -H "Content-Type: application/json" -d '{"actor":"j.analyst"}' \
+     http://127.0.0.1:8080/api/v1/response-plans/<plan_id>/execute | python3 -m json.tool
+   ```
+   A 422 means pre-execution revalidation blocked it (`execution_block_reason` in the response body
+   says exactly why - e.g. the incident stopped being eligible, or the playbook/policy bundle version
+   changed since approval); `execution_status` stays `NOT_EXECUTED` and MissionNet is untouched. A
+   409 means it's already executing or already terminal.
+
+3. **Watch the real timeline.** The Plan Detail page's **Response Execution** section, or:
+   ```bash
+   curl -s http://127.0.0.1:8080/api/v1/response-plans/<plan_id>/actions | python3 -m json.tool
+   ```
+   shows each action's real `status` (`SUCCEEDED`/`FAILED`/`SKIPPED`), `verification_status`
+   (`VERIFIED`/`NOT_APPLICABLE`), and target - every entry is a persisted DB row from a real
+   MissionNet call, never animated.
+
+4. **Confirm MissionNet actually changed.** Open http://127.0.0.1:3100 (MissionNet Operations
+   Console) - a quarantined asset shows `status: quarantined`, a suspended user's identity record
+   shows `status: suspended` (`curl -s http://127.0.0.1:8090/identity/users`), a replacement asset
+   appears in the asset list. The mission system status banner reads `CONTAINMENT_IN_PROGRESS`
+   while any asset is quarantined.
+
+5. **Confirm the incident itself is untouched.** `execution_status == SUCCEEDED` never changes the
+   incident's own `status` - it stays whatever an analyst last set it to (still `OPEN` by default).
+   The Incident Detail page's summary shows `Containment: VERIFIED` separately from the incident's
+   workflow status.
+
+6. **Roll back (manual).** Only available for `reversible: true` plans in a terminal `SUCCEEDED` or
+   `FAILED` execution state, and only for actions with a registered rollback handler (others show
+   `rollback_status: NOT_APPLICABLE`, never a false claim of reversal):
+   ```bash
+   curl -s -X POST -H "Content-Type: application/json" -d '{"actor":"j.analyst"}' \
+     http://127.0.0.1:8080/api/v1/response-plans/<plan_id>/rollback | python3 -m json.tool
+   ```
+
+7. **Run the AI-disabled execution flow.** With `SENTINEL_AI_ENABLED=false` (see step 8 in the
+   section above), create a plan with `recommendation_source: "analyst"`, approve it, and execute it
+   exactly as above - execution never depends on AI having been involved in recommending the
+   playbook.
+
+8. **Confirm idempotency.** Call `execute` a second time on an already-`SUCCEEDED` plan - the
+   response is unchanged and `GET .../actions` shows no new rows (no action re-runs, no duplicate
+   MissionNet calls).
 
 ## Stop
 
@@ -268,8 +326,10 @@ make health
 Runs `scripts/healthcheck.sh`, which checks PostgreSQL connectivity, API `/health`, dashboard HTTP
 response, MissionNet health, the AI Analyst status endpoint (non-critical - reports `DISABLED`
 truthfully when `SENTINEL_AI_ENABLED=false`, which is still a PASS), migration version, that a
-knowledge bundle is present, and that the playbook catalog loads all 5 playbooks. Exits non-zero on
-any critical failure.
+knowledge bundle is present, that the playbook catalog loads all 5 playbooks, that the response
+plans API is reachable, and that `system/assurance` reports `response_execution: "ENABLED -
+BOUNDED"` (non-critical - reads `DISABLED` truthfully if `SENTINEL_RESPONSE_EXECUTION_ENABLED=false`,
+still a PASS). Exits non-zero on any critical failure.
 
 ## Offline check
 
@@ -321,6 +381,19 @@ create a new one after changing `apps/missionnet/models.py`, `domain/models/orm.
 Always review the autogenerated file before applying it — Alembic's diff is a starting point, not a
 guarantee. In particular, check whether a new non-nullable column needs a `server_default` for
 existing rows (autogenerate never adds one automatically).
+
+### A new `/lab/*` endpoint 404s even though the code clearly has it
+The MissionNet `uvicorn` process is running without `--reload` (the default for a long-lived lab
+server - see DECISIONS.md's "Lab-control API design" and "Bugfix: `uvicorn --reload` watching the
+whole repo" entries) and was started before the new endpoint was added. It will
+not pick up code changes on its own. Restart it:
+```bash
+lsof -ti :8090 | xargs kill -9
+.venv/bin/uvicorn apps.missionnet.main:app --host 127.0.0.1 --port 8090 --app-dir . &
+```
+This bit Phase 7's response executor once - see DECISIONS.md's "real bugs found and fixed" entry.
+Response execution will report `execution_status: FAILED`/`ROLLED_BACK` with a 404-shaped error in
+that action's `error_message` when this happens, not a silent no-op.
 
 ### Demo won't reset cleanly
 `make reset-lab` should fully restore MissionNet's seed state and clear scenario/incident/execution

@@ -253,14 +253,14 @@ class AIAssessment(Base):
 
 
 class ResponsePlan(Base):
-    """A proposed, policy-evaluated, human-reviewable response to one incident (Phase 6). Recording
-    "what WOULD be executed" - `execution_status` is hardcoded EXECUTION_NOT_ENABLED everywhere in
-    this codebase; no code path in this phase ever sets it to anything else. Only ever created when
-    `services/policy_engine/engine.py::evaluate_policy` already returned `allowed=True` for this
-    exact (playbook, incident) pair - a denied policy decision never produces a row here, so every
-    row's mere existence already proves it passed policy. Append-only in spirit: status transitions
-    (approve/reject/cancel) update the same row rather than creating new ones, since a response plan
-    - unlike an AI assessment - has exactly one lifecycle, not a history of independent attempts."""
+    """A proposed, policy-evaluated, human-reviewable response to one incident (Phase 6), now with
+    real, bounded execution (Phase 7). Only ever created when `services/policy_engine/engine.py::
+    evaluate_policy` already returned `allowed=True` for this exact (playbook, incident) pair - a
+    denied policy decision never produces a row here, so every row's mere existence already proves
+    it passed policy. Append-only in spirit for the approval fields: status transitions (approve/
+    reject/cancel) update the same row rather than creating new ones, since a response plan - unlike
+    an AI assessment - has exactly one approval lifecycle. Execution is a *separate* lifecycle
+    (`execution_status`), deliberately never advanced by approval alone - see DECISIONS.md."""
 
     __tablename__ = "response_plans"
 
@@ -300,9 +300,69 @@ class ResponsePlan(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     scenario_id: Mapped[str | None] = mapped_column(default=None)
-    execution_status: Mapped[str] = mapped_column(default="EXECUTION_NOT_ENABLED")
-    """Always "EXECUTION_NOT_ENABLED" in Phase 6 - no executor exists yet. Never "NOT_EXECUTED",
-    which would imply an executor existed and chose not to run; that phase comes later."""
+
+    execution_status: Mapped[str] = mapped_column(default="NOT_EXECUTED")
+    """One of: NOT_EXECUTED, EXECUTING, VERIFYING, SUCCEEDED, FAILED, ROLLING_BACK, ROLLED_BACK,
+    ROLLBACK_FAILED. Phase 6's "EXECUTION_NOT_ENABLED" default is retired now that a real executor
+    exists - "NOT_EXECUTED" means the capability exists but this plan hasn't run yet, which is a
+    different, true statement. Existing Phase 6 demo rows with the old value are stale seed data,
+    not migrated (see DECISIONS.md); `make reset-demo` clears them. READY_TO_EXECUTE is vocabulary-
+    only, mirroring DRAFT/POLICY_REVIEW's Phase 6 precedent - pre-execution revalidation is
+    synchronous, so a plan moves directly from NOT_EXECUTED to EXECUTING within one request."""
+    executed_by: Mapped[str | None] = mapped_column(default=None)
+    execution_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    execution_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    executor_version: Mapped[str | None] = mapped_column(default=None)
+    execution_block_reason: Mapped[str | None] = mapped_column(default=None)
+    """Set when a POST .../execute request was rejected by pre-execution revalidation (blueprint
+    §9) - e.g. "target no longer exists" - without ever moving execution_status off NOT_EXECUTED.
+    Distinct from a FAILED execution, which did start running."""
+
+
+class ActionResult(Base):
+    """One row per playbook action attempted for one response plan (blueprint Phase 7 §7) - the
+    executor's own append-only ledger. `(response_plan_id, action_index)` is unique, which is what
+    makes re-running `execute` on the same plan idempotent: the executor looks up the existing row
+    for each index before doing anything, and a row already in a terminal status is never re-run
+    (see services/response_executor/executor.py and DECISIONS.md)."""
+
+    __tablename__ = "action_results"
+    __table_args__ = (UniqueConstraint("response_plan_id", "action_index"),)
+
+    action_result_id: Mapped[str] = mapped_column(primary_key=True)
+    response_plan_id: Mapped[str] = mapped_column(ForeignKey("response_plans.response_plan_id"))
+    action_index: Mapped[int]
+    action_id: Mapped[str]
+    required: Mapped[bool] = mapped_column(default=True)
+    """Copied from the playbook's PlaybookAction.required at execution time - governs whether this
+    action's outcome gates the plan's overall SUCCEEDED/FAILED result (blueprint §13)."""
+
+    target_type: Mapped[str | None] = mapped_column(default=None)
+    """"asset" | "identity_user" | "service_token" | "incident" | None if unresolved."""
+    target_id: Mapped[str | None] = mapped_column(default=None)
+
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    status: Mapped[str] = mapped_column(default="PENDING")
+    """One of: PENDING, SKIPPED, RUNNING, SUCCEEDED, FAILED."""
+    result_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    """Structured, non-secret facts only (e.g. {"new_token_id": "..."}) - never a password, token
+    value, or other secret. See DECISIONS.md."""
+
+    verification_status: Mapped[str] = mapped_column(default="NOT_CHECKED")
+    """One of: NOT_CHECKED, NOT_APPLICABLE, VERIFIED, FAILED."""
+    verification_detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    rollback_status: Mapped[str] = mapped_column(default="NOT_APPLICABLE")
+    """One of: NOT_APPLICABLE, PENDING, ROLLED_BACK, FAILED."""
+    rolled_back_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    error_code: Mapped[str | None] = mapped_column(default=None)
+    error_message: Mapped[str | None] = mapped_column(default=None)
 
 
 class IngestionCursor(Base):

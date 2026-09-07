@@ -26,6 +26,8 @@ type Assurance = {
   human_approval: string;
   response_execution: string;
   autonomous_response: string;
+  verification: string;
+  rollback: string;
   integrations: Record<string, string>;
 };
 
@@ -48,7 +50,9 @@ function Row({ label, value }: { label: string; value: string }) {
     "READY",
     "NONE",
     "ENABLED",
-    "DISABLED - NEXT PHASE",
+    "ENABLED - BOUNDED",
+    "ENABLED FOR SUPPORTED ACTIONS",
+    "BOUNDED - HUMAN-APPROVED ONLY, NO AUTONOMY",
   ].includes(value);
   const warn = value === "OFFLINE" || value === "DEGRADED";
   return (
@@ -118,6 +122,8 @@ export default async function AssurancePage() {
               <Row label="Human Approval" value={assurance.human_approval} />
               <Row label="Response Execution" value={assurance.response_execution} />
               <Row label="Autonomous Response" value={assurance.autonomous_response} />
+              <Row label="Verification" value={assurance.verification} />
+              <Row label="Rollback" value={assurance.rollback} />
             </section>
 
             <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">

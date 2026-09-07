@@ -32,5 +32,15 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8080
 
+    missionnet_base_url: str = "http://127.0.0.1:8090"
+    missionnet_lab_secret: str = "dev-only-lab-secret-change-me"
+    """Phase 7: the only two pieces of config the response executor needs to reach MissionNet's
+    lab-control API - mirrors apps/demo_control/config.py's identical fields, since Demo Control
+    and the executor are the only two callers of /lab/* (see apps/missionnet/lab.py's docstring)."""
+    response_execution_enabled: bool = True
+    """Master switch for Phase 7 execution, independent of response *planning* (Phase 6) which
+    always stays on. False makes every execute/rollback request return 503 without touching
+    MissionNet - an emergency kill switch, analogous to `ai_enabled` for the AI Analyst."""
+
 
 settings = Settings()

@@ -1,8 +1,9 @@
 """Response Center API (blueprint Phase 6 §12). Narrow by design: no endpoint accepts an arbitrary
 action payload - every response plan references a playbook_id from the fixed catalog, evaluated by
 the deterministic policy engine before anything is ever persisted. Approval/rejection require an
-explicit actor; nothing here can execute anything (`execution_status` is always
-EXECUTION_NOT_ENABLED - see domain/models/orm.py::ResponsePlan).
+explicit actor; nothing in *this* file can execute anything - actual execution is a separate
+lifecycle handled entirely by `apps/api/execution_routes.py` / `services/response_executor/`, only
+ever reachable from a plan already APPROVED here (see domain/models/orm.py::ResponsePlan).
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query

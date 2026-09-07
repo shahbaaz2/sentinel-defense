@@ -262,12 +262,14 @@ class SystemAssuranceOut(BaseModel):
     postgresql: str
     demo_control: str
     local_llm_runtime: str
-    rag_status: str = "NOT ENABLED - Phase 6"
-    response_authority: str = "NONE"
+    rag_status: str = "NOT ENABLED"
+    response_authority: str = "BOUNDED - HUMAN-APPROVED ONLY, NO AUTONOMY"
     response_planning: str = "ENABLED"
     policy_engine: str = "OPERATIONAL"
     human_approval: str = "ENABLED"
-    response_execution: str = "DISABLED - NEXT PHASE"
+    response_execution: str = "ENABLED - BOUNDED"
+    verification: str = "ENABLED"
+    rollback: str = "ENABLED FOR SUPPORTED ACTIONS"
     autonomous_response: str = "DISABLED"
     integrations: IntegrationStatusOut
 
@@ -361,6 +363,11 @@ class ResponsePlanOut(BaseModel):
     cancelled_at: datetime | None
     scenario_id: str | None
     execution_status: str
+    executed_by: str | None = None
+    execution_started_at: datetime | None = None
+    execution_completed_at: datetime | None = None
+    executor_version: str | None = None
+    execution_block_reason: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -378,3 +385,49 @@ class ResponsePlanReject(BaseModel):
 class ResponsePlanCancel(BaseModel):
     actor: str = Field(max_length=128)
     note: str | None = Field(default=None, max_length=2000)
+
+
+# --------------------------------------------------------------------------------------------
+# Phase 7: response execution, verification, rollback
+# --------------------------------------------------------------------------------------------
+
+
+class ResponsePlanExecute(BaseModel):
+    actor: str = Field(max_length=128)
+
+
+class ResponsePlanRollback(BaseModel):
+    actor: str = Field(max_length=128)
+
+
+class ActionResultOut(BaseModel):
+    action_result_id: str
+    response_plan_id: str
+    action_index: int
+    action_id: str
+    required: bool
+    target_type: str | None
+    target_id: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    status: Literal["PENDING", "SKIPPED", "RUNNING", "SUCCEEDED", "FAILED"]
+    result_metadata: dict
+    verification_status: Literal["NOT_CHECKED", "NOT_APPLICABLE", "VERIFIED", "FAILED"]
+    verification_detail: dict
+    rollback_status: Literal["NOT_APPLICABLE", "PENDING", "ROLLED_BACK", "FAILED"]
+    rolled_back_at: datetime | None
+    error_code: str | None
+    error_message: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionOut(BaseModel):
+    response_plan_id: str
+    execution_status: str
+    executed_by: str | None
+    execution_started_at: datetime | None
+    execution_completed_at: datetime | None
+    executor_version: str | None
+    execution_block_reason: str | None
+    actions: list[ActionResultOut]

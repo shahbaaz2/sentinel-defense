@@ -3,17 +3,157 @@
 Current phase, what is actually verified working (not just present), and the next task. Update this
 at every phase checkpoint — never claim something works without having run the check.
 
-## Current phase: Phase 6 — COMPLETE (playbook catalog, policy engine, human approval)
+## Current phase: Phase 7 — COMPLETE (deterministic response execution, verification, rollback)
 
-### Phase 0-5 recap (see git history for full detail)
+### Phase 0-6 recap (see git history for full detail)
 Repo scaffold, MissionNet's full synthetic data model + lab-control API + Operations Console,
 Sentinel's real ingestion/normalization/deterministic-detection/correlation pipeline with 6 rules
 (DET-001..006), Sentinel API + dashboard, Demo Control as a fourth independent product driving 5
 declarative scenarios (SCN-001/002/003/004/010) through real MissionNet APIs, a fully hardened SOC
 dashboard (live SSE updates, full incident workflow, Detection Coverage, Audit/Provenance, System
-Assurance), and a local, read-only AI Analyst (MLX/Qwen3-4B, evidence-grounded, hallucination
-rejection verified at 0% acceptance) — all verified end-to-end and committed (`0fa4286`, `3e7618e`,
-`43525c8`, `6fd74d0`, `2ea809a`, `2d53452`).
+Assurance), a local, read-only AI Analyst (MLX/Qwen3-4B, evidence-grounded, hallucination rejection
+verified at 0% acceptance), and Phase 6's playbook catalog + deterministic policy engine + human
+approval lifecycle for `ResponsePlan`s (AI can only ever recommend a playbook ID, proven
+structurally never able to approve one) — all verified end-to-end and committed (`0fa4286`,
+`3e7618e`, `43525c8`, `6fd74d0`, `2ea809a`, `2d53452`, `a13a2e1`).
+
+### Phase 7 — verified working
+
+**Deterministic Action Executor** (`services/response_executor/`, executor version `EX-001`):
+a closed action surface with one real-HTTP-call handler per registered action
+(`registry.py::ACTION_HANDLERS`) — no `execute_shell`, `ssh`, `execute_sql`, `docker_exec`,
+`firewall`, `run_script`, `subprocess`, or `os.system` exists anywhere in the executor's source,
+enforced by an automated source-text scan (`tests/unit/test_response_executor_registry.py`). Every
+handler calls one of 5 new idempotent MissionNet lab-control endpoints added to `apps/missionnet/
+lab.py` (suspend/reinstate user, reactivate/rotate token, request-replacement asset) plus the 3
+already built in Phase 3 (quarantine, restore-network, evidence-snapshot).
+
+**Strict target resolution** (`services/response_executor/targets.py`): every action's target is
+resolved fresh, immediately before that action runs, from trusted stored context only — the
+incident's own linked events/detections and the plan's own prior action results in the same run
+— never from free-form user input. A non-required action (`revoke_test_token` in RP-005, since not
+every multi-signal incident has an identity signal) whose target can't be resolved is `SKIPPED`,
+never blocking; a required action's unresolvable target blocks execution before anything runs.
+
+**Separate approval vs. execution status**: `ResponsePlan.status` (Phase 6's approval lifecycle,
+unchanged) and a new `execution_status` (`NOT_EXECUTED → EXECUTING → VERIFYING → SUCCEEDED|FAILED`,
+plus `ROLLING_BACK/ROLLED_BACK/ROLLBACK_FAILED/CANCELLED`) are independent fields — approving a plan
+never executes it; execution is a second, explicit human action (`POST /response-plans/{id}
+/execute`) gated by `settings.response_execution_enabled` (a kill switch) and by pre-execution
+revalidation (`executor.py::_revalidate`): re-checks the plan is still `APPROVED`, the incident and
+playbook still exist, the playbook version and policy bundle version are unchanged, the incident is
+still eligible under a fresh `evaluate_policy` call, and MissionNet is reachable — any failure sets
+`execution_block_reason` and raises without moving `execution_status` off `NOT_EXECUTED`.
+
+**Real, independent verification** (`services/response_executor/verifier.py`): 8 verification
+functions, one per `expected_verification` value in the playbook catalog, each re-reading real
+MissionNet state via a fresh `GET` call — never trusting the action's own HTTP 200. A plan is only
+`SUCCEEDED` if every `required=true` action's result is `SUCCEEDED` and its verification is
+`VERIFIED` or `NOT_APPLICABLE`.
+
+**Rollback** (`services/response_executor/rollback.py`): 4 rollback handlers, run in reverse action
+order, only for actions with a registered handler — an action with no rollback capability gets
+`rollback_status="NOT_APPLICABLE"`, never a false claim of reversal. Automatic on execution failure
+(when `plan.reversible`) and available as a separate manual action (`POST /response-plans/{id}
+/rollback`) from a terminal `SUCCEEDED` or `FAILED` execution state.
+
+**Idempotency and crash/restart safety**: `ActionResult` rows are keyed uniquely by
+`(response_plan_id, action_index)`; re-running `execute` on a terminal plan is a no-op that returns
+the existing record; resuming a plan that crashed mid-run skips actions already `SUCCEEDED`/
+`SKIPPED` and re-verifies them for real rather than trusting the persisted status — verified with a
+test that actually suspends a user via MissionNet, inserts a matching `ActionResult`, then confirms
+resuming doesn't re-suspend but does re-verify.
+
+**AI/executor structural isolation, proven** (`tests/adversarial/test_executor_ai_isolation.py`):
+`services/response_executor/` never imports `ai.providers`, `ai.schemas`, or
+`services.ai_analyst.service` — checked both by a source-text scan and by walking the live
+`sys.modules` graph reachable from the executor's own module objects at runtime. It does legitimately
+import `services.ai_analyst.evidence.build_evidence_pack` (a pure, deterministic evidence-pack
+builder with no model calls) to re-check policy eligibility during revalidation — the exact same
+shared dependency Phase 6's policy engine already used, and a dedicated test documents why this one
+import doesn't violate the isolation guarantee.
+
+**Response Center + Response Plan Detail UI**: Response Center now buckets plans into 7 views
+(Awaiting Approval / Approved-Ready / Executing / Completed / Failed-Rolled-Back / Rejected /
+Cancelled) computed from `(status, execution_status)`, with Approve/Reject, Execute, and Rollback
+actions rendered only where legal. The Plan Detail page gained a **Response Execution** section
+showing the real persisted timeline (timestamps, per-action status, verification result, rollback
+result — "nothing here is animated or simulated") and an `ExecutionControls` component that requires
+an explicit confirmation dialog before either EXECUTE or ROLLBACK fires. Incident Detail gained a
+`Response Playbook / Approval / Execution / Containment` summary — the incident's own `status` is
+never auto-resolved by execution, verified live (incident stayed `OPEN` after a `SUCCEEDED`
+execution).
+
+**Live SCN-010 flagship flow, verified end-to-end via the actual dashboard** (2026-09-06): ran
+SCN-010 → opened the asset-degradation incident (DET-002+DET-004+DET-005) → real AI analysis
+recommended `RP-005` → created and approved the plan → clicked EXECUTE (confirmed via the confirmation
+dialog's underlying API call) → `execution_status` went `SUCCEEDED` with `quarantine_workload`
+SUCCEEDED/VERIFIED, `revoke_test_token` SKIPPED (no identity signal in this asset-only incident),
+`preserve_evidence` SUCCEEDED/VERIFIED, `request_replacement_instance` SUCCEEDED/VERIFIED — verified
+in all of: Response Plan Detail (real timeline + `RESPONSE SUCCEEDED` banner), Response Center
+(bucketed under Completed with a Rollback action available), MissionNet Operations Console (system
+status `CONTAINMENT_IN_PROGRESS`, `mission-data-api-01` shown `quarantined`, the new
+`mission-data-api-01-replacement` asset shown `nominal`), Incident Detail (`Containment: VERIFIED`,
+incident still `OPEN`), Audit/Provenance (full `response_plan.execution_started` →
+`action_started`/`action_result`/`action_verified` (×4) → `execution_succeeded` chain), and System
+Assurance (`Response Execution: ENABLED - BOUNDED`, `Verification: ENABLED`, `Rollback: ENABLED FOR
+SUPPORTED ACTIONS`).
+
+**AI-disabled manual execution flow, verified live** (2026-09-06): set `SENTINEL_AI_ENABLED=false`,
+restarted the API, opened the credential-abuse incident from the same SCN-010 run — Incident Detail
+correctly showed AI Assessment `DISABLED` and Response Planning showed "No AI recommendation" with
+RP-001 selectable manually — created a plan with `recommendation_source: "analyst"`, approved and
+executed it: `suspend_test_user` and `preserve_evidence` both `SUCCEEDED`/`VERIFIED`, and MissionNet's
+own `/identity/users` endpoint confirmed `u-operator-01` genuinely `status: "suspended"` afterward.
+Re-enabled AI and restarted the API afterward.
+
+### Real bugs found and fixed during this phase
+1. **Stale MissionNet server**: the running `uvicorn` process (no `--reload`) never loaded the 5 new
+   `/lab/*` endpoints added this phase, causing the first live execution attempt to 404 and roll
+   back. Fixed by restarting it — see DECISIONS.md for why `--reload` isn't the default for lab
+   servers.
+2. **Target-resolution timing bug**: `verify_service_health`'s special case (prefer a same-run
+   `request_replacement_instance` result over the original, still-quarantined asset) couldn't work
+   when all targets were resolved once, up front, before any action had run. Fixed by re-resolving
+   each action's target fresh, immediately before it runs, using the continuously updated
+   in-run results — the up-front pass is now used only to decide whether to block execution before
+   it starts.
+
+### Tests and checks actually run (Phase 7)
+- **235 tests passing** (`.venv/bin/pytest -q -m "not ai_live"`, up from 204 at end of Phase 6): 8
+  new unit (executor registry closure/completeness — every playbook action has a handler, every
+  action's expected verification has a verifier, `restore_workload_network` is rollback-only, no
+  forbidden execution primitive anywhere in the executor's source), 19 new integration (happy-path
+  execution for both RP-001 and RP-005 against real MissionNet state, idempotent duplicate-execute,
+  crash/restart resume without re-running completed steps, 5 distinct pre-execution revalidation
+  blocks with `MissionNet genuinely untouched` assertions, verification-failure prevents `SUCCEEDED`,
+  manual rollback restoring real state, rollback-not-allowed-before-execution, rollback failure
+  handling, full audit trail completeness, full AI-disabled execution flow), 4 new adversarial
+  (AI/executor structural isolation, both by source scan and live module-graph walk).
+- `ruff check .` and `mypy ai services apps domain evaluation` (83 files) both clean.
+- `tsc --noEmit` and `eslint` clean on all three Next.js apps.
+- Full `scripts/healthcheck.sh` passes, including two new checks (Response Plans API reachable;
+  Response Execution kill switch reads `ENABLED - BOUNDED`).
+- Live SCN-010 flagship execution and live AI-disabled manual execution (both above), each exercised
+  through the actual dashboard/real MissionNet state, not just an automated test.
+
+### Known limitations
+- `DRAFT`/`POLICY_REVIEW`/`EXPIRED` remain vocabulary-only `ResponsePlan.status` values, unchanged
+  from Phase 6 — still no code path sets them.
+- Only 4 of the 8 registered actions have a rollback handler (`quarantine_workload`,
+  `suspend_test_user`, `revoke_test_token`, `rotate_test_token`) — `preserve_evidence` and
+  `request_replacement_instance` are intentionally one-directional (undoing a snapshot or a
+  provisioned replacement is not a meaningful "rollback"), and `verify_service_health` is a read-only
+  check with nothing to roll back. This is a deliberate per-action design decision, not a gap.
+- The Phase 4 `TelemetrySample.scenario_id` gap and the missing `scripts/offline-check.sh` follow-
+  through (both documented in Phase 4/5) remain unfixed, unchanged, and did not block this phase.
+
+### Next task
+Phase 8 — real sensors + SIEM portability. Phase 7 completes the blueprint's suggested MVP stopping
+point: the full chain from a real synthetic anomaly through detection, correlation, optional AI
+assessment, deterministic policy eligibility, human approval, human-initiated execution, independent
+verification, and rollback is now real end to end, with the LLM never once holding write access to
+MissionNet or to any `ResponsePlan`'s approval/execution state.
 
 ### Phase 6 — verified working
 
@@ -538,7 +678,7 @@ about whether a detection or incident exists — that remains Phase 2's determin
 | 4 — Sentinel dashboard | **Yes — verified** |
 | 5 — Local AI analyst (RAG is Phase 6) | **Yes — verified** |
 | 6 — Playbooks/policy/approval | **Yes — verified** |
-| 7 — Deterministic response + verification (MVP stopping point) | Not started |
+| 7 — Deterministic response + verification (MVP stopping point) | **Yes — verified** |
 | 8 — Real sensors + SIEM portability | Not started |
 | 9 — Validation/coverage/offline hardening | Not started |
 | 10 — Model benchmarking | Not started |

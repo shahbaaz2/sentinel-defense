@@ -1,10 +1,12 @@
-# Human approval workflow (Phase 6)
+# Human approval workflow (Phase 6; execution is Phase 7 - see docs/response-executor.md)
 
 A `ResponsePlan` row only ever exists because `services/policy_engine/engine.py::evaluate_policy`
 already returned `allowed=True` for that exact (playbook, incident) pair - see
-`domain/models/orm.py::ResponsePlan`'s docstring. Everything in this document is about what happens
-*after* that: a human decides whether the plan should actually happen, and - in Phase 6 - "happen"
-still only means "be marked APPROVED," never "run."
+`domain/models/orm.py::ResponsePlan`'s docstring. This document is about what this file's approval
+lifecycle (`ResponsePlan.status`) covers: a human decides whether the plan should be approved.
+"Approved" still only ever means that - a second, independent field (`execution_status`, Phase 7)
+tracks whether the approved plan has actually been run; approving a plan never executes it. See
+`docs/response-executor.md` for everything after approval.
 
 ## States
 
@@ -12,9 +14,9 @@ still only means "be marked APPROVED," never "run."
                     (policy denies -> no row is ever created)
                                 |
 create_response_plan  ---->  AWAITING_APPROVAL  ---->  APPROVED
-                                    |                       (execution_status stays
-                                    |                        EXECUTION_NOT_ENABLED
-                                    +----------------->  REJECTED   forever in Phase 6)
+                                    |                       (execution_status starts
+                                    |                        NOT_EXECUTED - see
+                                    +----------------->  REJECTED   docs/response-executor.md)
                                     |
                                     +----------------->  CANCELLED
 ```
@@ -60,14 +62,14 @@ influence on a response plan is supplying a `recommended_playbook_id` that a *hu
 to submit via `POST .../response-plan` with `recommendation_source: "ai"` - a request the API
 treats identically to an analyst's own manual choice in every other respect.
 
-## Why execution stays disabled
+## Why approval never executes anything
 
-`ResponsePlan.execution_status` is hardcoded `"EXECUTION_NOT_ENABLED"` - there is no executor
-module, no code path that flips it, and no API field that accepts a different value. This is
-deliberate scope discipline for Phase 6 (blueprint §25: "Do NOT implement actual: token revocation,
-account disablement, container quarantine, network blocking, workload restart, firewall changes"):
-proving Sentinel can safely *recommend and authorize* a bounded response plan is a genuinely
-separate milestone from proving it can *execute* one, and conflating them would mean shipping
-containment automation without having independently verified the recommendation/policy/approval
-chain first. Real execution - actually calling MissionNet's `/lab/*` endpoints for a playbook's
-actions, with its own verification and rollback - is explicitly the next phase's work.
+Approving a plan (`POST .../response-plans/{id}/approve`) only ever sets `status="APPROVED"` - no
+code path in `services/policy_engine/service.py` touches `execution_status` as a side effect. This
+was deliberate scope discipline in Phase 6 (blueprint §25: "Do NOT implement actual: token
+revocation, account disablement, container quarantine, network blocking, workload restart, firewall
+changes") and remains a deliberate architectural boundary in Phase 7, now enforced by a second human
+action instead of by execution not existing at all: `services/response_executor/` is a separate
+package with its own entry point (`POST .../response-plans/{id}/execute`), so "a human approved
+this" and "MissionNet's real state changed" stay two observably different events even now that
+execution is real. See `docs/response-executor.md` and `docs/verification-and-rollback.md`.

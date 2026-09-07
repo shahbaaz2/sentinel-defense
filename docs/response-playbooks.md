@@ -1,9 +1,10 @@
-# Response playbooks (Phase 6)
+# Response playbooks (Phase 6; execution is Phase 7 - see docs/response-executor.md)
 
 Declarative response *plan definitions*, not executable scripts. Nothing in `playbooks/*.yaml`
 contains a shell command, SQL statement, or network call - each playbook only references stable
-`action_id`s from a closed registry (`services/policy_engine/actions.py`). Execution doesn't exist
-yet; see `docs/human-approval.md` for what a plan's lifecycle actually does in this phase.
+`action_id`s from a closed registry (`services/policy_engine/actions.py`). See
+`docs/human-approval.md` for a plan's approval lifecycle and `docs/response-executor.md` for what
+happens when an approved plan is actually executed.
 
 ## The catalog
 
@@ -37,7 +38,8 @@ reversible: true
 actions:
   - action_id: quarantine_workload              # must exist in the action registry
     target_source: incident_asset               # incident | incident_asset | incident_identity
-verification: [workload_isolated, ...]          # what would confirm success - never checked in Phase 6
+    required: true                              # default true; false only for RP-005's revoke_test_token
+verification: [workload_isolated, ...]          # re-checked for real by services/response_executor/verifier.py
 rollback: [restore_workload_network]            # free-text steps, not necessarily registry action IDs
 risk:
   mission_impact: high
@@ -73,6 +75,17 @@ category a multi-signal incident could plausibly land on *and* requires `minimum
 independent of which one happened to arrive first. Verified live: SCN-010's asset-degradation
 incident shows both RP-003 and RP-005 as eligible (`GET .../eligible-playbooks`), and the real
 local AI model recommended RP-005 for it unprompted (see PROGRESS.md).
+
+## Why RP-005's `revoke_test_token` step is `required: false`
+
+RP-005 is eligible across four different incident categories with structurally different evidence -
+some are purely asset-based (no identity/token in evidence at all), some are identity-based (no
+degraded asset). Its `revoke_test_token` step can't always resolve a target, even for a genuinely
+eligible incident. Marking it `required: false` (`services/policy_engine/playbooks.py::
+PlaybookAction.required`, default `true` for every other step in every other playbook) means the
+executor `SKIP`s it when unresolvable instead of blocking or failing the whole plan - verified live:
+the SCN-010 flagship incident (asset-only) executes RP-005 to `SUCCEEDED` with this one step
+`SKIPPED`. See `docs/response-executor.md`.
 
 ## Adding a playbook
 

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.missionnet.config import settings
 from apps.missionnet.db import get_session
-from apps.missionnet.models import Asset, AuditEvent, ServiceToken, TelemetrySample
+from apps.missionnet.models import Asset, AuditEvent, IdentityUser, ServiceToken, TelemetrySample
 from apps.missionnet.seed import reset_and_seed
 from apps.missionnet.state import compute_system_state
 
@@ -212,3 +212,154 @@ async def snapshot_evidence(
     )
     await session.commit()
     return {"snapshot_id": snapshot_id}
+
+
+# --------------------------------------------------------------------------------------------
+# Phase 7: added specifically for Sentinel's deterministic response executor. Each endpoint is
+# idempotent - calling it twice with the same target never duplicates state or creates a second
+# row - since the executor must be able to safely retry/resume without double-applying an action.
+# --------------------------------------------------------------------------------------------
+
+
+@router.post("/users/{user_id}/suspend")
+async def suspend_user(
+    user_id: str,
+    ctx: ScenarioContext = ScenarioContext(),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await session.get(IdentityUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="identity user not in synthetic inventory")
+    already_suspended = user.status == "suspended"
+    user.status = "suspended"
+    if not already_suspended:
+        await _write_audit(session, ctx, "user.suspend", "identity_user", user_id, severity="high")
+    await session.commit()
+    return {"user_id": user_id, "status": user.status}
+
+
+@router.post("/users/{user_id}/reinstate")
+async def reinstate_user(
+    user_id: str,
+    ctx: ScenarioContext = ScenarioContext(),
+    session: AsyncSession = Depends(get_session),
+):
+    """Rollback for `suspend_user`."""
+    user = await session.get(IdentityUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="identity user not in synthetic inventory")
+    already_active = user.status == "active"
+    user.status = "active"
+    if not already_active:
+        await _write_audit(
+            session, ctx, "user.reinstate", "identity_user", user_id, severity="info"
+        )
+    await session.commit()
+    return {"user_id": user_id, "status": user.status}
+
+
+@router.post("/tokens/{token_id}/reactivate")
+async def reactivate_token(
+    token_id: str,
+    ctx: ScenarioContext = ScenarioContext(),
+    session: AsyncSession = Depends(get_session),
+):
+    """Rollback for `revoke_token`."""
+    token = await session.get(ServiceToken, token_id)
+    if token is None:
+        raise HTTPException(status_code=404, detail="token not in synthetic inventory")
+    already_valid = token.valid
+    token.valid = True
+    token.revoked_at = None
+    if not already_valid:
+        await _write_audit(
+            session, ctx, "token.reactivate", "service_token", token_id, severity="info"
+        )
+    await session.commit()
+    return {"token_id": token_id, "valid": token.valid}
+
+
+@router.post("/tokens/{token_id}/rotate")
+async def rotate_token(
+    token_id: str,
+    ctx: ScenarioContext = ScenarioContext(),
+    session: AsyncSession = Depends(get_session),
+):
+    """Revokes `token_id` and issues a deterministically-named replacement
+    (`{token_id}-rotated`) for the same owner. The deterministic new ID is what makes this
+    idempotent: calling it twice returns the same replacement token both times rather than
+    minting a second one."""
+    token = await session.get(ServiceToken, token_id)
+    if token is None:
+        raise HTTPException(status_code=404, detail="token not in synthetic inventory")
+
+    new_token_id = f"{token_id}-rotated"
+    existing = await session.get(ServiceToken, new_token_id)
+    if existing is not None:
+        return {"old_token_id": token_id, "new_token_id": new_token_id, "valid": existing.valid}
+
+    token.valid = False
+    token.revoked_at = datetime.now(UTC)
+    new_token = ServiceToken(
+        token_id=new_token_id,
+        owner_user_id=token.owner_user_id,
+        token_type=token.token_type,
+        valid=True,
+    )
+    session.add(new_token)
+    await _write_audit(
+        session,
+        ctx,
+        "token.rotate",
+        "service_token",
+        token_id,
+        severity="info",
+        detail={"old_token_id": token_id, "new_token_id": new_token_id},
+    )
+    await session.commit()
+    return {"old_token_id": token_id, "new_token_id": new_token_id, "valid": True}
+
+
+@router.post("/assets/{asset_id}/request-replacement")
+async def request_replacement(
+    asset_id: str,
+    ctx: ScenarioContext = ScenarioContext(),
+    session: AsyncSession = Depends(get_session),
+):
+    """Synthetic-only: creates a new, healthy Asset row standing in for a replacement instance -
+    no real infrastructure is provisioned. The deterministic `{asset_id}-replacement` ID makes
+    this idempotent the same way `rotate_token` is."""
+    original = await session.get(Asset, asset_id)
+    if original is None:
+        raise HTTPException(status_code=404, detail="asset not in synthetic inventory")
+
+    replacement_id = f"{asset_id}-replacement"
+    existing = await session.get(Asset, replacement_id)
+    if existing is not None:
+        return {"replacement_asset_id": replacement_id, "status": existing.status}
+
+    replacement = Asset(
+        asset_id=replacement_id,
+        name=f"{original.name} (Replacement)",
+        asset_type=original.asset_type,
+        mission_role=original.mission_role,
+        criticality=original.criticality,
+        dependencies=list(original.dependencies),
+        max_allowed_outage_seconds=original.max_allowed_outage_seconds,
+        containment_cost=original.containment_cost,
+        rollback_supported=False,
+        status="nominal",
+        network_state="normal",
+    )
+    session.add(replacement)
+    await _write_audit(
+        session,
+        ctx,
+        "asset.replacement_provisioned",
+        "asset",
+        asset_id,
+        severity="info",
+        detail={"replacement_asset_id": replacement_id},
+    )
+    await session.commit()
+    return {"replacement_asset_id": replacement_id, "status": replacement.status}
