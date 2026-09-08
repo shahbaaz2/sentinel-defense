@@ -6,6 +6,9 @@ class Settings(BaseSettings):
 
     env: str = "development"
     profile: str = "lite"
+    platform_label: str = "Apple Silicon (arm64)"
+    """Purely descriptive, shown verbatim on System Assurance - override to the real host when
+    deploying somewhere other than this Mac (e.g. "Linux x86_64 (Render)")."""
 
     database_url: str = "postgresql+asyncpg://sentinel:sentinel@127.0.0.1:5432/sentinel"
 
@@ -15,6 +18,16 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1500
     llm_timeout_seconds: float = 90.0
     external_ai_enabled: bool = False
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = ""
+    """Both only read when llm_provider == "deepseek" (a cloud deployment with no Apple-Silicon
+    host to run MLXProvider - see ai/providers/deepseek_provider.py). Deliberately separate from
+    `llm_base_url` (a vestigial Phase 5 placeholder no provider actually reads) rather than reusing
+    it, so an empty `deepseek_base_url` cleanly falls back to DeepSeek's real default endpoint
+    instead of an unrelated local-mlx-server URL. The API key is never logged, never sent to
+    frontend JavaScript. Setting SENTINEL_LLM_PROVIDER=deepseek without also setting
+    external_ai_enabled=true is a config error the operator should notice honestly reflected in
+    System Assurance, not silently corrected - see docs/deployment.md."""
     ai_enabled: bool = False
     """Phase 5: master switch for the AI Analyst. False is the safe default for a fresh checkout
     that hasn't downloaded a local model yet - deterministic detection/correlation never depend on
@@ -31,12 +44,20 @@ class Settings(BaseSettings):
 
     api_host: str = "127.0.0.1"
     api_port: int = 8080
+    cors_allowed_origins: str = "http://127.0.0.1:3000,http://localhost:3000"
+    """Comma-separated. Defaults to the local dashboard only - a cloud deployment sets this to its
+    real Vercel origin(s) (see docs/deployment.md). Never `*` - the dashboard sends no credentials
+    cross-origin today, but an explicit origin list is the correct default regardless."""
 
     missionnet_base_url: str = "http://127.0.0.1:8090"
     missionnet_lab_secret: str = "dev-only-lab-secret-change-me"
     """Phase 7: the only two pieces of config the response executor needs to reach MissionNet's
     lab-control API - mirrors apps/demo_control/config.py's identical fields, since Demo Control
     and the executor are the only two callers of /lab/* (see apps/missionnet/lab.py's docstring)."""
+    demo_control_base_url: str = "http://127.0.0.1:8100"
+    """Used only by System Assurance's own reachability check - a cloud deployment sets this to
+    Demo Control's real Render URL so the check reflects reality instead of an unreachable
+    localhost address. See docs/deployment.md."""
     response_execution_enabled: bool = True
     """Master switch for Phase 7 execution, independent of response *planning* (Phase 6) which
     always stays on. False makes every execute/rollback request return 503 without touching

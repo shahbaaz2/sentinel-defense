@@ -18,9 +18,6 @@ from services.policy_engine.engine import POLICY_BUNDLE_VERSION
 
 router = APIRouter(prefix="/api/v1")
 
-MISSIONNET_BASE_URL = "http://127.0.0.1:8090"
-DEMO_CONTROL_BASE_URL = "http://127.0.0.1:8100"
-
 
 async def _reachable(url: str) -> bool:
     try:
@@ -36,8 +33,8 @@ async def system_assurance(
     session: AsyncSession = Depends(get_session),
     provider: LLMProvider = Depends(get_llm_provider),
 ):
-    missionnet_ok = await _reachable(f"{MISSIONNET_BASE_URL}/health")
-    demo_control_ok = await _reachable(f"{DEMO_CONTROL_BASE_URL}/health")
+    missionnet_ok = await _reachable(f"{settings.missionnet_base_url}/health")
+    demo_control_ok = await _reachable(f"{settings.demo_control_base_url}/health")
 
     postgres_ok = False
     try:
@@ -65,13 +62,24 @@ async def system_assurance(
     registry = build_adapter_registry(settings)
     integration_statuses = {d.adapter_id: await d.status() for d in registry}
 
+    # A cloud deployment with SENTINEL_LLM_PROVIDER=deepseek genuinely does call an external API -
+    # this must say so honestly rather than keep asserting the local/offline claim regardless of
+    # configuration (see docs/deployment.md and DECISIONS.md).
+    uses_cloud_ai = settings.ai_enabled and settings.llm_provider == "deepseek"
+    inference_location = "cloud (DeepSeek API)" if uses_cloud_ai else "local"
+    internet_required_for_core_demo = (
+        "YES - the AI Analyst calls the DeepSeek API"
+        if uses_cloud_ai
+        else "NO - runtime demo requires no external network access"
+    )
+
     return SystemAssuranceOut(
         deployment_profile=settings.profile.upper(),
-        platform="Apple Silicon (arm64)",
-        inference_location="local",
+        platform=settings.platform_label,
+        inference_location=inference_location,
         external_ai_api="DISABLED" if not settings.external_ai_enabled else "ENABLED",
         ai_analyst_status=ai_status,
-        internet_required_for_core_demo="NO - runtime demo requires no external network access",
+        internet_required_for_core_demo=internet_required_for_core_demo,
         model=settings.llm_model,
         model_provider=settings.llm_provider,
         knowledge_bundle=settings.knowledge_bundle,

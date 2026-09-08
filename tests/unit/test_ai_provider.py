@@ -75,12 +75,27 @@ def test_build_provider_unknown_name_raises():
         build_provider("openai", "gpt-4")
 
 
-def test_build_provider_rejects_cloud_names_by_construction():
-    """There is no branch in build_provider that returns anything for a cloud provider name -
-    the allowlist is closed, not filtered, so a typo'd or malicious config value fails safe."""
+def test_build_provider_rejects_unlisted_names_by_construction():
+    """`build_provider` only has branches for {mock, mlx, deepseek} - a typo'd or malicious config
+    value fails safe rather than falling through to something unintended. `deepseek` (Phase 8+) is
+    deliberately allowlisted for cloud deployments with no Apple-Silicon host; every other cloud
+    name stays rejected exactly like before."""
     for forbidden in ("openai", "anthropic", "gemini", "huggingface-inference"):
         with pytest.raises(ValueError):
             build_provider(forbidden, "some-model")
+
+
+def test_build_provider_deepseek_is_allowlisted():
+    provider = build_provider("deepseek", "deepseek-chat", api_key="test-key")
+    assert provider.provider_name == "deepseek"
+
+
+def test_deepseek_provider_provenance_reports_cloud_runtime():
+    provider = build_provider("deepseek", "deepseek-chat", api_key="test-key")
+    provenance = provider.get_provenance()
+    assert provenance.model_provider == "deepseek"
+    assert "cloud" in provenance.runtime.lower()
+    assert provenance.local_path is None
 
 
 def test_get_provider_singleton_reused_for_same_key():

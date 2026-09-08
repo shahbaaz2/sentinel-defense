@@ -20,7 +20,12 @@ router = APIRouter(prefix="/api/v1")
 
 
 def get_llm_provider() -> LLMProvider:
-    return get_provider(settings.llm_provider, settings.llm_model)
+    return get_provider(
+        settings.llm_provider,
+        settings.llm_model,
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+    )
 
 
 @router.get("/ai/status", response_model=AIStatusOut)

@@ -1,0 +1,123 @@
+# Render Blueprint - a starting point for deploying all three Sentinel backends + their databases
+# in one pass (Render dashboard -> New -> Blueprint -> point at this repo). Verify field names
+# against Render's current docs at deploy time; their Blueprint schema does evolve. See
+# docs/deployment.md for the full walkthrough, including the manual (non-Blueprint) path and every
+# environment variable's meaning.
+#
+# Frontends (apps/dashboard, apps/missionnet-console, apps/demo-control-console) are NOT part of
+# this file - they deploy to Vercel instead (see docs/deployment.md's Vercel section), since Render
+# Blueprints only provision Render's own resource types.
+
+databases:
+  - name: sentinel-db
+    plan: free
+    databaseName: sentinel
+    user: sentinel
+  - name: missionnet-db
+    plan: free
+    databaseName: missionnet
+    user: missionnet
+  - name: democontrol-db
+    plan: free
+    databaseName: democontrol
+    user: democontrol
+
+services:
+  # ---------------------------------------------------------------------------------------------
+  # MissionNet - deploy and migrate this one first; the other two depend on its URL.
+  # ---------------------------------------------------------------------------------------------
+  - type: web
+    name: sentinel-missionnet
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      alembic -c infrastructure/migrations/missionnet/alembic.ini upgrade head &&
+      uvicorn apps.missionnet.main:app --host 0.0.0.0 --port $PORT --app-dir .
+    healthCheckPath: /health
+    envVars:
+      - key: MISSIONNET_DATABASE_URL
+        fromDatabase:
+          name: missionnet-db
+          property: connectionString
+      - key: MISSIONNET_API_HOST
+        value: 0.0.0.0
+      - key: MISSIONNET_LAB_SECRET
+        sync: false # paste the same real secret you use for SENTINEL_MISSIONNET_LAB_SECRET below
+
+  # ---------------------------------------------------------------------------------------------
+  # Sentinel API - deploy after MissionNet; set SENTINEL_MISSIONNET_BASE_URL to its Render URL.
+  # ---------------------------------------------------------------------------------------------
+  - type: web
+    name: sentinel-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      alembic -c infrastructure/migrations/sentinel/alembic.ini upgrade head &&
+      uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT --app-dir .
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: SENTINEL_DATABASE_URL
+        fromDatabase:
+          name: sentinel-db
+          property: connectionString
+      - key: SENTINEL_API_HOST
+        value: 0.0.0.0
+      - key: SENTINEL_ENV
+        value: production
+      - key: SENTINEL_PLATFORM_LABEL
+        value: Linux x86_64 (Render)
+      - key: SENTINEL_MISSIONNET_BASE_URL
+        sync: false # set to sentinel-missionnet's Render URL, e.g. https://sentinel-missionnet.onrender.com
+      - key: SENTINEL_MISSIONNET_LAB_SECRET
+        sync: false # same real secret as MISSIONNET_LAB_SECRET above
+      - key: SENTINEL_DEMO_CONTROL_BASE_URL
+        sync: false # set to sentinel-demo-control's Render URL once it exists (System Assurance only)
+      - key: SENTINEL_CORS_ALLOWED_ORIGINS
+        sync: false # your deployed dashboard's Vercel URL, e.g. https://your-dashboard.vercel.app
+      - key: SENTINEL_RESPONSE_EXECUTION_ENABLED
+        value: "true"
+      # Suricata/Zeek/Wazuh/Splunk/Falco all default false - leave unset to keep them
+      # NOT_CONFIGURED (Suricata/Zeek's Docker-based pipeline doesn't run on Render - see
+      # docs/deployment.md and docs/sensor-pipeline.md).
+      #
+      # AI Analyst (optional - omit all three to leave it NOT ENABLED):
+      - key: SENTINEL_AI_ENABLED
+        value: "false"
+      - key: SENTINEL_LLM_PROVIDER
+        value: deepseek
+      - key: SENTINEL_LLM_MODEL
+        value: deepseek-chat
+      - key: SENTINEL_EXTERNAL_AI_ENABLED
+        value: "true"
+      - key: SENTINEL_DEEPSEEK_API_KEY
+        sync: false # paste your real DeepSeek API key here in the Render dashboard, never in git
+
+  # ---------------------------------------------------------------------------------------------
+  # Demo Control - deploy last; needs both other services' Render URLs.
+  # ---------------------------------------------------------------------------------------------
+  - type: web
+    name: sentinel-demo-control
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      alembic -c infrastructure/migrations/demo_control/alembic.ini upgrade head &&
+      uvicorn apps.demo_control.main:app --host 0.0.0.0 --port $PORT --app-dir .
+    healthCheckPath: /health
+    envVars:
+      - key: DEMOCONTROL_DATABASE_URL
+        fromDatabase:
+          name: democontrol-db
+          property: connectionString
+      - key: DEMOCONTROL_API_HOST
+        value: 0.0.0.0
+      - key: DEMOCONTROL_MISSIONNET_BASE_URL
+        sync: false # sentinel-missionnet's Render URL
+      - key: DEMOCONTROL_SENTINEL_BASE_URL
+        sync: false # sentinel-api's Render URL
+      - key: DEMOCONTROL_MISSIONNET_LAB_SECRET
+        sync: false # same real secret as MISSIONNET_LAB_SECRET above
+      - key: DEMOCONTROL_CORS_ALLOWED_ORIGINS
+        sync: false # your deployed demo-control-console's Vercel URL

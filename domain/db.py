@@ -12,8 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import NullPool
 
-SENTINEL_DATABASE_URL = os.environ.get(
-    "SENTINEL_DATABASE_URL", "postgresql+asyncpg://sentinel:sentinel@127.0.0.1:5432/sentinel"
+from domain.db_url import normalize_async_postgres_url
+
+SENTINEL_DATABASE_URL = normalize_async_postgres_url(
+    os.environ.get(
+        "SENTINEL_DATABASE_URL", "postgresql+asyncpg://sentinel:sentinel@127.0.0.1:5432/sentinel"
+    )
 )
 
 # NullPool for the same reason as apps/missionnet/db.py: avoids pooled asyncpg connections binding

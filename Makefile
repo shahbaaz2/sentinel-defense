@@ -41,7 +41,7 @@ ai-status:
 
 test:
 	$(VENV)/pytest -q
-	@if [ -f apps/dashboard/package.json ]; then cd apps/dashboard && pnpm test; fi
+	@if [ -f apps/dashboard/package.json ] && grep -q '"test"[[:space:]]*:' apps/dashboard/package.json; then cd apps/dashboard && pnpm test; else echo "SKIP dashboard tests: no test script configured"; fi
 
 lint:
 	$(VENV)/ruff check .

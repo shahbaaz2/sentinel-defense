@@ -25,11 +25,13 @@ app.include_router(integration_router)
 app.include_router(response_router)
 app.include_router(stream_router)
 
-# The dashboard (:3000) opens a Server-Sent-Events connection to /api/v1/stream from browser JS - a
-# different origin, so it needs CORS enabled, same reasoning as Demo Control's console (:3200).
+# The dashboard opens a Server-Sent-Events connection to /api/v1/stream from browser JS - a
+# different origin, so it needs CORS enabled. Origins come from settings (SENTINEL_CORS_ALLOWED_
+# ORIGINS) so a cloud deployment can lock this to its real Vercel domain(s) instead of the local
+# default - see docs/deployment.md.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_origins=[o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )

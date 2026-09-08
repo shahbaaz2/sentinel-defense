@@ -4,6 +4,71 @@ ADR-style log of durable engineering decisions. Newest first. Each entry: date, 
 
 ---
 
+## 2026-09-07 — Optional cloud deployment: DeepSeek as a third, explicitly allowlisted `LLMProvider`
+
+The user asked to deploy the dashboards to Vercel and the APIs to Render for a portfolio-style
+public demo - neither host offers Apple Silicon, so `MLXProvider` (Apple-Silicon-only, blueprint
+AI Analyst §2) cannot run there. Rather than weaken the provider abstraction (e.g. a generic
+"any OpenAI-compatible endpoint" provider that would accept an arbitrary base URL from config),
+`ai/providers/deepseek_provider.py::DeepSeekProvider` is a fourth concrete implementation of the
+exact same `LLMProvider` Protocol MLX/mock already satisfy, added to `build_provider`'s closed
+allowlist alongside them - `{mock, mlx, deepseek}`, still nothing else, still no dynamically
+constructed provider name. All of Phase 5's guardrails carry over unchanged: schema-validated
+structured output only, no write path, cannot approve or execute anything (the executor package
+never imports `ai.providers` regardless of which one is active - see Phase 7's isolation proof).
+This is genuinely opt-in and off by default (`SENTINEL_LLM_PROVIDER=mock` remains the shipped
+default) - see docs/deployment.md and the updated SECURITY.md note.
+
+## 2026-09-07 — System Assurance's "local"/"no internet required" claims are now computed, not hardcoded
+
+Before this, `apps/api/assurance_routes.py` returned `platform: "Apple Silicon (arm64)"`,
+`inference_location: "local"`, and `internet_required_for_core_demo: "NO..."` as literal constants
+regardless of actual configuration - true for every deployment that existed at the time, but it
+would have silently kept claiming "local" and "no internet required" even after switching to a
+real cloud AI provider, exactly the kind of unobserved assertion this page exists to prevent
+(blueprint §16.8, and the page's own docstring: "every field here reflects a real check, never a
+hard-coded value"). `platform` is now a `SENTINEL_PLATFORM_LABEL` setting (purely descriptive,
+operator-set); `inference_location`/`internet_required_for_core_demo` are computed from whether
+`ai_enabled and llm_provider == "deepseek"` is genuinely true. A local Mac run's assurance page is
+completely unchanged (same defaults, same literal values); only a real cloud-AI deployment now
+correctly reports itself as such.
+
+## 2026-09-07 — Postgres URL normalization: accept `postgres://`/`postgresql://` verbatim from managed providers
+
+Render (and Heroku, and most managed Postgres providers) hand out connection strings as
+`postgres://` or plain `postgresql://` - SQLAlchemy's asyncpg driver requires the
+`postgresql+asyncpg://` scheme explicitly, and the failure mode for pasting the wrong scheme in is
+an unhelpful driver error, not a clear "wrong URL format" message. `domain/db_url.py::
+normalize_async_postgres_url` upgrades the scheme wherever a database URL is read (Sentinel's own
+`domain/db.py`, and a `field_validator` on both `apps/missionnet/config.py` and
+`apps/demo_control/config.py`'s `database_url` fields) - an operator can paste Render's own
+connection string in unmodified. A URL that's already correct, or an unrelated scheme (e.g.
+`sqlite://` in a future test fixture), passes through unchanged.
+
+## 2026-09-07 — `requirements.txt` split from `requirements-dev.txt`: mlx/mlx-lm are Apple-Silicon-only
+
+`requirements-dev.txt` (the only requirements file that existed before this) included `mlx`/
+`mlx-lm` unconditionally - fine for local development on this Mac, but those wheels don't exist
+for Linux at all, so `pip install -r requirements-dev.txt` fails outright on Render. A new
+`requirements.txt` holds exactly the runtime dependencies every deployment target needs (FastAPI,
+SQLAlchemy, alembic, httpx, ...); `requirements-dev.txt` now starts with `-r requirements.txt` and
+adds only local-dev-only packages (mlx/mlx-lm, pytest, ruff, mypy) on top, so the two files can
+never drift out of sync by hand-editing one and forgetting the other. Render's build command uses
+`requirements.txt`; `scripts/bootstrap-mac.sh` (local dev) is unchanged, still installing
+`requirements-dev.txt`, which now transitively includes everything `requirements.txt` has.
+
+## 2026-09-07 — CORS origins and cross-service base URLs became settings, not hardcoded constants
+
+`apps/api/main.py` and `apps/demo_control/main.py` both hardcoded `allow_origins=["http://
+127.0.0.1:3000", ...]`-style lists, and `apps/api/assurance_routes.py` hardcoded MissionNet's and
+Demo Control's base URLs as module-level constants - all correct for local dev, all wrong the
+moment any of these services runs somewhere other than `127.0.0.1`. Both became `Settings` fields
+(`cors_allowed_origins`, `demo_control_base_url`) with the exact same local defaults, so a fresh
+checkout behaves identically to before this change; a cloud deployment sets them to real URLs (see
+docs/deployment.md). MissionNet's own API needed no such change - `apps/missionnet-console` has no
+client-side (browser) fetch calls anywhere (confirmed by grep), so it never triggers a CORS
+preflight regardless of where it's hosted.
+
 ## 2026-09-06 — Phase 8: Suricata/Zeek run in batch mode against a captured pcap, never as a live sniffer
 
 A continuously-running network sensor needs raw-socket/promiscuous access to a real interface,

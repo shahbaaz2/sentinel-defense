@@ -18,7 +18,13 @@ information, Controlled Unclassified Information (CUI), production credentials, 
 - A general-purpose shell, SQL, SSH, or firewall tool exposed to the LLM.
 - Model-generated commands passed directly to a privileged executor without allow-list validation.
 - Any dependency on a paid cloud service or external AI API for the MVP; external AI is disabled by
-  default (`SENTINEL_EXTERNAL_AI_ENABLED=false`).
+  default (`SENTINEL_EXTERNAL_AI_ENABLED=false`). An optional cloud provider (`ai/providers/
+  deepseek_provider.py`) exists for operators who choose to deploy off this Mac (see
+  `docs/deployment.md`) - it is off by default, requires explicitly setting both
+  `SENTINEL_LLM_PROVIDER=deepseek` and `SENTINEL_EXTERNAL_AI_ENABLED=true`, and never changes the
+  AI Analyst's own guardrails (schema-validated output only, no write path, cannot approve or
+  execute anything). Enabling it is an honest, visible change to System Assurance's
+  `inference_location`/`internet_required_for_core_demo` fields, never silently masked.
 - Claims of DoD certification, CMMC certification, an Authorization to Operate, classified suitability,
   or regulatory compliance — this is a research prototype, not an accredited system.
 

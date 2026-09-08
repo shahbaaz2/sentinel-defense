@@ -10,23 +10,39 @@ _provider_singleton: LLMProvider | None = None
 _provider_singleton_key: tuple[str, str] | None = None
 
 
-def build_provider(provider_name: str, model_name: str) -> LLMProvider:
+def build_provider(
+    provider_name: str,
+    model_name: str,
+    *,
+    api_key: str = "",
+    base_url: str = "",
+) -> LLMProvider:
     if provider_name == "mock":
         return MockProvider()
     if provider_name == "mlx":
         from ai.providers.mlx_provider import MLXProvider
 
         return MLXProvider(model_name=model_name)
+    if provider_name == "deepseek":
+        from ai.providers.deepseek_provider import DEFAULT_BASE_URL, DeepSeekProvider
+
+        return DeepSeekProvider(
+            api_key=api_key, model_name=model_name, base_url=base_url or DEFAULT_BASE_URL
+        )
     raise ValueError(f"Unknown SENTINEL_LLM_PROVIDER: {provider_name!r}")
 
 
-def get_provider(provider_name: str, model_name: str) -> LLMProvider:
+def get_provider(
+    provider_name: str, model_name: str, *, api_key: str = "", base_url: str = ""
+) -> LLMProvider:
     """Process-wide singleton per (provider_name, model_name) - the whole point of the MLX
     provider being a singleton is that the 16GB Lite profile must never load the model twice."""
     global _provider_singleton, _provider_singleton_key
     key = (provider_name, model_name)
     if _provider_singleton is None or _provider_singleton_key != key:
-        _provider_singleton = build_provider(provider_name, model_name)
+        _provider_singleton = build_provider(
+            provider_name, model_name, api_key=api_key, base_url=base_url
+        )
         _provider_singleton_key = key
     return _provider_singleton
 
