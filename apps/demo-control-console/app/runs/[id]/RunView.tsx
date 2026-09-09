@@ -3,14 +3,25 @@
 import { useEffect, useRef, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_DEMOCONTROL_API_BASE_URL ?? "http://127.0.0.1:8100";
+const SENTINEL_DASHBOARD =
+  process.env.NEXT_PUBLIC_SENTINEL_DASHBOARD_URL ?? "https://sentinel-defense-g6id.vercel.app";
+const MISSIONNET_CONSOLE = process.env.NEXT_PUBLIC_MISSIONNET_CONSOLE_URL ?? null;
 const TERMINAL_STATES = new Set(["PASSED", "FAILED", "CANCELLED"]);
 const POLL_MS = 1500;
 
-type TimelineEntry = { timestamp: string; message: string };
+type TimelineEntry = {
+  timestamp: string;
+  message: string;
+  level?: string;
+  component?: string;
+  code?: string;
+};
 
 type RunDetail = {
   run_id: string;
   scenario_id: string;
+  scenario_version?: string;
+  actor?: string;
   status: string;
   current_step: string | null;
   failure_reason: string | null;
@@ -27,33 +38,57 @@ type RunDetail = {
 };
 
 const CHECK_LABELS: Record<string, string> = {
-  missionnet_event_observed: "MissionNet event observed",
-  normalized_event_observed: "Sentinel normalized event observed",
+  missionnet_event_observed: "Source evidence observed",
+  normalized_event_observed: "Normalized event observed",
   expected_detection_observed: "Expected detection observed",
   incident_created: "Expected incident created",
   evidence_link_verified: "Evidence provenance verified",
-  no_duplicate_on_replay: "Duplicate check (idempotent replay)",
+  no_duplicate_on_replay: "Replay idempotency verified",
 };
 
 const CHECK_ORDER = Object.keys(CHECK_LABELS);
 
-function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === "PASSED"
-      ? "bg-emerald-500 text-black"
-      : status === "FAILED"
-        ? "bg-red-500 text-black"
-        : status === "CANCELLED"
-          ? "bg-zinc-600 text-white"
-          : "bg-amber-500 text-black animate-pulse";
-  return (
-    <span className={`rounded-full px-3 py-1 text-xs font-bold uppercase ${color}`}>{status}</span>
-  );
+function statusClass(status: string) {
+  if (status === "PASSED") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "FAILED") return "border-red-200 bg-red-50 text-red-700";
+  if (status === "CANCELLED") return "border-zinc-200 bg-zinc-100 text-zinc-600";
+  return "border-blue-200 bg-blue-50 text-blue-700";
+}
+
+function failureCode(reason: string | null): string | null {
+  return reason?.match(/\[([A-Z0-9_]+)\]/)?.[1] ?? null;
+}
+
+function failureSummary(reason: string | null): { title: string; action: string } {
+  const code = failureCode(reason);
+  if (code === "UPSTREAM_INVALID_RESPONSE") {
+    return {
+      title: "An upstream API returned an invalid response format.",
+      action: "Review the component and operation in the log. The run stopped because the required JSON contract was not satisfied.",
+    };
+  }
+  if (code === "UPSTREAM_GATEWAY_ERROR" || code === "UPSTREAM_TRANSPORT_ERROR") {
+    return {
+      title: "An upstream service was temporarily unavailable.",
+      action: "Confirm MissionNet and Sentinel service health, then start a new controlled run.",
+    };
+  }
+  if (code === "EVIDENCE_TIMEOUT" || code === "SENTINEL_VERIFICATION_TIMEOUT") {
+    return {
+      title: "Expected pipeline evidence was not observed within the validation window.",
+      action: "Review source telemetry and Sentinel ingestion logs to identify the missing stage.",
+    };
+  }
+  return {
+    title: "The run stopped before all verification controls completed.",
+    action: "Review the failure detail and operational log before rerunning the scenario.",
+  };
 }
 
 export function RunView({ runId }: { runId: string }) {
   const [run, setRun] = useState<RunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<"cancel" | "reset" | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -61,9 +96,9 @@ export function RunView({ runId }: { runId: string }) {
 
     async function poll() {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/runs/${runId}`, { cache: "no-store" });
-        if (!res.ok) throw new Error(`run fetch failed: ${res.status}`);
-        const data: RunDetail = await res.json();
+        const response = await fetch(`${API_BASE}/api/v1/runs/${runId}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = (await response.json()) as RunDetail;
         if (cancelled) return;
         setRun(data);
         setError(null);
@@ -72,11 +107,13 @@ export function RunView({ runId }: { runId: string }) {
           intervalRef.current = null;
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "poll failed");
+        if (!cancelled) {
+          setError(`Unable to retrieve run state${err instanceof Error ? ` (${err.message})` : ""}.`);
+        }
       }
     }
 
-    poll();
+    void poll();
     intervalRef.current = setInterval(poll, POLL_MS);
     return () => {
       cancelled = true;
@@ -85,160 +122,228 @@ export function RunView({ runId }: { runId: string }) {
   }, [runId]);
 
   async function handleCancel() {
-    await fetch(`${API_BASE}/api/v1/runs/${runId}/cancel`, { method: "POST" });
+    setActionBusy("cancel");
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/runs/${runId}/cancel`, { method: "POST" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setRun((await response.json()) as RunDetail);
+    } catch (err) {
+      setError(`Cancel request failed${err instanceof Error ? ` (${err.message})` : ""}.`);
+    } finally {
+      setActionBusy(null);
+    }
   }
 
   async function handleResetAfter() {
-    await fetch(`${API_BASE}/api/v1/runs/${runId}/reset`, { method: "POST" });
+    setActionBusy("reset");
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/runs/${runId}/reset`, { method: "POST" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setRun((await response.json()) as RunDetail);
+    } catch (err) {
+      setError(`Lab reset failed${err instanceof Error ? ` (${err.message})` : ""}.`);
+    } finally {
+      setActionBusy(null);
+    }
   }
 
   if (error && !run) {
-    return <p className="text-sm text-red-400">Demo Control API unreachable: {error}</p>;
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+        <p className="font-semibold">Demo Control API unavailable</p>
+        <p className="mt-1">{error}</p>
+      </div>
+    );
   }
+
   if (!run) {
-    return <p className="text-sm text-zinc-500">Loading run…</p>;
+    return <p className="text-sm text-zinc-500">Loading run state…</p>;
   }
 
   const canCancel = !TERMINAL_STATES.has(run.status);
+  const failed = run.status === "FAILED";
+  const failure = failed ? failureSummary(run.failure_reason) : null;
+  const code = failureCode(run.failure_reason);
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="font-mono text-xs text-zinc-500">{run.run_id}</p>
-          <h1 className="text-xl font-semibold text-white">{run.scenario_id}</h1>
+    <div className="space-y-6">
+      <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs font-semibold text-blue-700">{run.scenario_id}</span>
+              <span className={`rounded border px-2 py-1 text-[10px] font-semibold ${statusClass(run.status)}`}>{run.status}</span>
+            </div>
+            <h1 className="mt-3 text-xl font-semibold text-zinc-950">Scenario run detail</h1>
+            <p className="mt-2 break-all font-mono text-xs text-zinc-500">{run.run_id}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {canCancel && (
+              <button
+                onClick={handleCancel}
+                disabled={actionBusy !== null}
+                className="rounded-md border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+              >
+                {actionBusy === "cancel" ? "Cancelling…" : "Cancel run"}
+              </button>
+            )}
+            {TERMINAL_STATES.has(run.status) && (
+              <button
+                onClick={handleResetAfter}
+                disabled={actionBusy !== null}
+                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+              >
+                {actionBusy === "reset" ? "Resetting…" : "Reset synthetic lab"}
+              </button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <StatusBadge status={run.status} />
-          {canCancel && (
-            <button
-              onClick={handleCancel}
-              className="rounded border border-red-800 px-3 py-1.5 text-xs text-red-400 hover:bg-red-950"
-            >
-              Cancel
-            </button>
-          )}
-          {TERMINAL_STATES.has(run.status) && (
-            <button
-              onClick={handleResetAfter}
-              className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-900"
-            >
-              Reset Lab
-            </button>
-          )}
-        </div>
-      </div>
 
-      {run.current_step && (
-        <p className="text-sm text-cyan-400">Current step: {run.current_step}</p>
-      )}
-      {run.reset_status && (
-        <p className="text-xs text-zinc-500">Lab reset: {run.reset_status}</p>
-      )}
-      {run.failure_reason && (
-        <p className="rounded border border-red-900 bg-red-950/40 p-3 text-sm text-red-400">
-          {run.failure_reason}
-        </p>
-      )}
-
-      <section>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-widest text-zinc-500">
-          Live Timeline
-        </h2>
-        <ul className="flex flex-col gap-1 font-mono text-xs">
-          {run.timeline.map((entry, i) => (
-            <li key={i} className="flex gap-3 text-zinc-400">
-              <span className="text-zinc-600">
-                {new Date(entry.timestamp).toLocaleTimeString()}
-              </span>
-              <span>{entry.message}</span>
-            </li>
-          ))}
-          {run.timeline.length === 0 && <li className="text-zinc-600">Waiting to start…</li>}
-        </ul>
+        <dl className="mt-5 grid gap-4 border-t border-zinc-100 pt-4 text-xs sm:grid-cols-2 lg:grid-cols-4">
+          <div><dt className="text-zinc-500">Current step</dt><dd className="mt-1 font-mono text-zinc-800">{run.current_step ?? "—"}</dd></div>
+          <div><dt className="text-zinc-500">Started</dt><dd className="mt-1 text-zinc-800">{new Date(run.started_at).toLocaleString()}</dd></div>
+          <div><dt className="text-zinc-500">Completed</dt><dd className="mt-1 text-zinc-800">{run.completed_at ? new Date(run.completed_at).toLocaleString() : "—"}</dd></div>
+          <div><dt className="text-zinc-500">Lab reset</dt><dd className="mt-1 font-mono text-zinc-800">{run.reset_status ?? "Not requested"}</dd></div>
+        </dl>
       </section>
 
-      <section>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-widest text-zinc-500">
-          Verification
-        </h2>
-        <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
+      )}
+
+      {failed && failure && (
+        <section className="rounded-lg border border-red-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-red-100 bg-red-50 px-5 py-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-red-700">Execution failure</p>
+              <p className="mt-1 text-sm font-semibold text-red-950">{failure.title}</p>
+            </div>
+            {code && <span className="rounded border border-red-200 bg-white px-2 py-1 font-mono text-[10px] text-red-700">{code}</span>}
+          </div>
+          <div className="grid gap-4 p-5 md:grid-cols-2">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Failure detail</p>
+              <p className="mt-2 break-words font-mono text-xs leading-5 text-zinc-700">{run.failure_reason ?? "No detail available"}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Recommended action</p>
+              <p className="mt-2 text-xs leading-5 text-zinc-700">{failure.action}</p>
+              <p className="mt-2 text-xs font-semibold text-zinc-600">No downstream stage is represented as successful after this failure.</p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["Source events", run.missionnet_event_ids.length],
+          ["Normalized events", run.sentinel_event_ids.length],
+          ["Detections", run.detection_ids.length],
+          ["Incidents", run.incident_ids.length],
+        ].map(([label, value]) => (
+          <div key={String(label)} className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{label}</p>
+            <p className="mt-2 text-2xl font-semibold text-zinc-950">{value}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="rounded-lg border border-zinc-200 bg-white shadow-sm">
+        <div className="border-b border-zinc-200 px-5 py-4">
+          <h2 className="text-sm font-semibold text-zinc-950">Verification controls</h2>
+          <p className="mt-1 text-xs text-zinc-500">Checks are derived from observed MissionNet and Sentinel evidence.</p>
+        </div>
+        <div className="grid gap-0 sm:grid-cols-2 lg:grid-cols-3">
           {CHECK_ORDER.map((key) => {
-            const value = run.verification[key];
             const known = key in run.verification;
+            const value = run.verification[key];
             return (
-              <li
-                key={key}
-                className="flex items-center gap-2 rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs"
-              >
-                <span className={known ? (value ? "text-emerald-400" : "text-red-400") : "text-zinc-600"}>
-                  {known ? (value ? "✓" : "✗") : "…"}
-                </span>
-                <span className="text-zinc-300">{CHECK_LABELS[key]}</span>
-              </li>
+              <div key={key} className="border-b border-r border-zinc-100 p-4">
+                <p className="text-xs text-zinc-600">{CHECK_LABELS[key]}</p>
+                <p className={`mt-2 text-xs font-semibold ${!known ? "text-zinc-400" : value ? "text-emerald-700" : "text-red-700"}`}>
+                  {!known ? "PENDING" : value ? "PASS" : "FAIL"}
+                </p>
+              </div>
             );
           })}
-        </ul>
+        </div>
       </section>
 
-      <section className="grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
-        <div>
-          <p className="text-zinc-500">MissionNet events</p>
-          <p className="font-mono text-zinc-200">{run.missionnet_event_ids.length}</p>
+      <section className="rounded-lg border border-zinc-200 bg-white shadow-sm">
+        <div className="border-b border-zinc-200 px-5 py-4">
+          <h2 className="text-sm font-semibold text-zinc-950">Operational log</h2>
+          <p className="mt-1 text-xs text-zinc-500">Structured timeline of execution and upstream service activity.</p>
         </div>
-        <div>
-          <p className="text-zinc-500">Sentinel events</p>
-          <p className="font-mono text-zinc-200">{run.sentinel_event_ids.length}</p>
-        </div>
-        <div>
-          <p className="text-zinc-500">Detections</p>
-          <p className="font-mono text-zinc-200">{run.detection_ids.length}</p>
-        </div>
-        <div>
-          <p className="text-zinc-500">Incidents</p>
-          <p className="font-mono text-zinc-200">{run.incident_ids.length}</p>
+        <div className="max-h-[460px] overflow-auto">
+          <table className="w-full min-w-[760px] border-collapse text-left text-xs">
+            <thead className="sticky top-0 bg-zinc-50 text-[10px] uppercase tracking-wide text-zinc-500">
+              <tr>
+                <th className="border-b border-zinc-200 px-4 py-3 font-semibold">Time</th>
+                <th className="border-b border-zinc-200 px-4 py-3 font-semibold">Level</th>
+                <th className="border-b border-zinc-200 px-4 py-3 font-semibold">Component</th>
+                <th className="border-b border-zinc-200 px-4 py-3 font-semibold">Code</th>
+                <th className="border-b border-zinc-200 px-4 py-3 font-semibold">Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {run.timeline.map((entry, index) => (
+                <tr key={`${entry.timestamp}-${index}`} className="border-b border-zinc-100 last:border-0">
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-zinc-500">{new Date(entry.timestamp).toLocaleTimeString()}</td>
+                  <td className={`px-4 py-3 font-semibold ${entry.level === "ERROR" ? "text-red-700" : entry.level === "WARN" ? "text-amber-700" : "text-zinc-600"}`}>{entry.level ?? "INFO"}</td>
+                  <td className="px-4 py-3 text-zinc-600">{entry.component ?? "Demo Control"}</td>
+                  <td className="px-4 py-3 font-mono text-zinc-500">{entry.code ?? "—"}</td>
+                  <td className="px-4 py-3 leading-5 text-zinc-700">{entry.message}</td>
+                </tr>
+              ))}
+              {run.timeline.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-zinc-400">No operational events recorded.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </section>
 
       {run.incident_ids.length > 0 && (
-        <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-widest text-zinc-500">
-            Resulting Incidents
-          </h2>
-          <ul className="flex flex-col gap-2">
+        <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+          <h2 className="text-sm font-semibold text-zinc-950">Resulting incidents</h2>
+          <div className="mt-3 space-y-2">
             {run.incident_ids.map((id) => (
-              <li key={id}>
-                <a
-                  href={`http://127.0.0.1:3000/incidents/${id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-mono text-xs text-cyan-400 hover:underline"
-                >
-                  {id} → open in Sentinel Incident Detail
-                </a>
-              </li>
+              <a
+                key={id}
+                href={`${SENTINEL_DASHBOARD}/incidents/${id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-between rounded border border-zinc-200 px-3 py-2.5 text-xs text-zinc-700 hover:border-blue-300 hover:bg-blue-50"
+              >
+                <span className="font-mono">{id}</span>
+                <span className="text-blue-700">Open incident ↗</span>
+              </a>
             ))}
-          </ul>
+          </div>
         </section>
       )}
 
-      <div className="flex flex-wrap gap-3 text-xs">
+      <div className="flex flex-wrap gap-2">
         <a
-          href="http://127.0.0.1:3100"
+          href={SENTINEL_DASHBOARD}
           target="_blank"
           rel="noreferrer"
-          className="rounded border border-zinc-800 px-3 py-1.5 text-zinc-400 hover:text-cyan-400"
+          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
         >
-          → MissionNet Operations Console
+          Open Sentinel dashboard ↗
         </a>
-        <a
-          href="http://127.0.0.1:3000"
-          target="_blank"
-          rel="noreferrer"
-          className="rounded border border-zinc-800 px-3 py-1.5 text-zinc-400 hover:text-cyan-400"
-        >
-          → Sentinel SOC Dashboard
-        </a>
+        {MISSIONNET_CONSOLE && (
+          <a
+            href={MISSIONNET_CONSOLE}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
+          >
+            Open MissionNet console ↗
+          </a>
+        )}
       </div>
     </div>
   );
