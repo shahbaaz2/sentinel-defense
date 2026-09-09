@@ -1,6 +1,8 @@
-"""Derives PASS/FAIL from Sentinel's real read APIs - never from anything the runner remembers
-"should" have happened. Every check here either finds real IDs or it doesn't; there is no code
-path that marks a check true without an API response backing it.
+"""Derive scenario PASS/FAIL from Sentinel's real read APIs.
+
+Every check here is backed by observed Sentinel evidence. Upstream HTTP handling is centralized so
+an empty/non-JSON cloud response becomes a classified integration failure rather than a raw JSON
+decoder exception shown to the operator.
 """
 
 from dataclasses import dataclass, field
@@ -8,6 +10,7 @@ from datetime import datetime
 
 import httpx
 
+from apps.demo_control.http_client import request_json
 from apps.demo_control.scenarios import ScenarioDefinition
 
 
@@ -32,8 +35,24 @@ class VerificationResult:
 
 
 async def capture_baseline(sentinel: httpx.AsyncClient) -> Baseline:
-    detections = (await sentinel.get("/api/v1/detections", params={"limit": 500})).json()
-    incidents = (await sentinel.get("/api/v1/incidents", params={"limit": 500})).json()
+    detections = await request_json(
+        sentinel,
+        "GET",
+        "/api/v1/detections",
+        component="Sentinel API",
+        retry_safe=True,
+        expected_type=list,
+        params={"limit": 500},
+    )
+    incidents = await request_json(
+        sentinel,
+        "GET",
+        "/api/v1/incidents",
+        component="Sentinel API",
+        retry_safe=True,
+        expected_type=list,
+        params={"limit": 500},
+    )
     return Baseline(
         detection_ids={d["detection_id"] for d in detections},
         incident_ids={i["incident_id"] for i in incidents},
@@ -49,18 +68,27 @@ async def verify_scenario_result(
 ) -> VerificationResult:
     result = VerificationResult()
 
-    # normalized_event_observed
-    events = (
-        await sentinel.get(
-            "/api/v1/events",
-            params={"since": run_started_at.isoformat(), "limit": 500},
-        )
-    ).json()
+    events = await request_json(
+        sentinel,
+        "GET",
+        "/api/v1/events",
+        component="Sentinel API",
+        retry_safe=True,
+        expected_type=list,
+        params={"since": run_started_at.isoformat(), "limit": 500},
+    )
     result.sentinel_event_ids = [e["event_id"] for e in events]
     result.checks["normalized_event_observed"] = len(result.sentinel_event_ids) > 0
 
-    # expected_detection_observed
-    all_detections = (await sentinel.get("/api/v1/detections", params={"limit": 500})).json()
+    all_detections = await request_json(
+        sentinel,
+        "GET",
+        "/api/v1/detections",
+        component="Sentinel API",
+        retry_safe=True,
+        expected_type=list,
+        params={"limit": 500},
+    )
     new_detections = [d for d in all_detections if d["detection_id"] not in baseline.detection_ids]
     result.detection_ids = [d["detection_id"] for d in new_detections]
     observed_rule_ids = {d["rule_id"] for d in new_detections}
@@ -70,8 +98,15 @@ async def verify_scenario_result(
     result.detail["missing_detection_rules"] = sorted(missing_rules)
     result.detail["observed_detection_rules"] = sorted(observed_rule_ids)
 
-    # incident_created
-    all_incidents = (await sentinel.get("/api/v1/incidents", params={"limit": 500})).json()
+    all_incidents = await request_json(
+        sentinel,
+        "GET",
+        "/api/v1/incidents",
+        component="Sentinel API",
+        retry_safe=True,
+        expected_type=list,
+        params={"limit": 500},
+    )
     new_incidents = [i for i in all_incidents if i["incident_id"] not in baseline.incident_ids]
     result.incident_ids = [i["incident_id"] for i in new_incidents]
     expected_incidents = scenario.expected_observations.sentinel.incidents
@@ -84,23 +119,34 @@ async def verify_scenario_result(
     result.checks["incident_created"] = incident_count_ok and incident_asset_ok
     result.detail["new_incident_count"] = len(new_incidents)
 
-    # evidence_link_verified: every new incident's detail must expose non-empty event_ids
     evidence_ok = len(new_incidents) > 0
     for incident in new_incidents:
-        detail = (await sentinel.get(f"/api/v1/incidents/{incident['incident_id']}")).json()
+        detail = await request_json(
+            sentinel,
+            "GET",
+            f"/api/v1/incidents/{incident['incident_id']}",
+            component="Sentinel API",
+            retry_safe=True,
+            expected_type=dict,
+        )
         if not detail.get("event_ids"):
             evidence_ok = False
     result.checks["evidence_link_verified"] = evidence_ok
 
-    # no_duplicate_on_replay: run the exact same pipeline again; nothing new should appear
-    replay = (await sentinel.post("/api/v1/ingest/run")).json()
+    # Sentinel ingestion is designed to be idempotent; a bounded retry is safe here and the result
+    # itself proves whether replay created any duplicate detections/incidents.
+    replay = await request_json(
+        sentinel,
+        "POST",
+        "/api/v1/ingest/run",
+        component="Sentinel API",
+        retry_safe=True,
+        expected_type=dict,
+    )
     result.checks["no_duplicate_on_replay"] = (
         replay["detections_created"] == 0 and replay["incidents_created"] == 0
     )
     result.detail["replay_result"] = replay
 
-    # missionnet_event_observed is set by the runner (it has the MissionNet-side IDs); default
-    # here in case a caller inspects this result before the runner fills it in.
     result.checks.setdefault("missionnet_event_observed", False)
-
     return result
