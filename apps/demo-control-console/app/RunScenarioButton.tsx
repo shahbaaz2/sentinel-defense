@@ -29,15 +29,15 @@ export function RunScenarioButton({ scenarioId }: { scenarioId: string }) {
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className="flex min-w-0 flex-col gap-1">
       <button
         onClick={handleRun}
         disabled={starting}
-        className="whitespace-nowrap rounded bg-cyan-500 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-black hover:bg-cyan-400 disabled:opacity-50"
+        className="w-full rounded-lg border border-white/[0.09] bg-white/[0.035] px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-zinc-300 transition hover:border-cyan-400/30 hover:bg-cyan-400/[0.07] hover:text-cyan-200 disabled:cursor-wait disabled:opacity-50"
       >
         {starting ? "Starting…" : "Run Scenario"}
       </button>
-      {error && <span className="text-xs text-red-400">{error}</span>}
+      {error && <span className="break-words text-[9px] leading-4 text-red-400">{error}</span>}
     </div>
   );
 }
