@@ -67,6 +67,30 @@ export default async function DemoControlHome() {
           </p>
         </div>
 
+        <Link
+          href="/live-demo"
+          className="group overflow-hidden rounded-xl border border-cyan-900/70 bg-gradient-to-r from-cyan-950/30 via-zinc-950 to-red-950/20 p-5 transition hover:border-cyan-500/70"
+        >
+          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="rounded bg-amber-500/20 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-amber-300">
+                  Flagship experience
+                </span>
+                <span className="text-[10px] uppercase tracking-widest text-cyan-500">SCN-010</span>
+              </div>
+              <h2 className="mt-3 text-lg font-semibold text-white">Immersive Live Attack Replay</h2>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-500">
+                Watch credential pressure, mission-service degradation, deterministic Sentinel detections,
+                incident correlation, evidence verification, and the handoff into AI-assisted human-approved response.
+              </p>
+            </div>
+            <span className="whitespace-nowrap rounded-lg bg-cyan-400 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-black group-hover:bg-cyan-300">
+              Launch GUI Demo →
+            </span>
+          </div>
+        </Link>
+
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <StatusPill
             label="MissionNet"
@@ -79,7 +103,11 @@ export default async function DemoControlHome() {
             ok={status?.sentinel_status === "ONLINE"}
           />
           <StatusPill label="Ingestion" value="ON-DEMAND" ok={true} />
-          <StatusPill label="AI Analyst" value={status?.ai_analyst_status ?? "NOT_ENABLED"} ok={false} />
+          <StatusPill
+            label="AI Analyst"
+            value={status?.ai_analyst_status ?? "NOT_ENABLED"}
+            ok={status?.ai_analyst_status === "OPERATIONAL" || status?.ai_analyst_status === "READY"}
+          />
         </div>
 
         <div>
@@ -110,29 +138,19 @@ export default async function DemoControlHome() {
                     {s.step_count} step(s) · {s.risk_level}
                   </p>
                 </div>
-                <RunScenarioButton scenarioId={s.id} />
+                {s.id === "SCN-010" ? (
+                  <Link
+                    href="/live-demo"
+                    className="whitespace-nowrap rounded bg-cyan-500 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-black hover:bg-cyan-400"
+                  >
+                    Launch Replay
+                  </Link>
+                ) : (
+                  <RunScenarioButton scenarioId={s.id} />
+                )}
               </div>
             ))}
           </div>
-        </div>
-
-        <div className="flex flex-wrap gap-3 text-xs">
-          <a
-            href="http://127.0.0.1:3100"
-            target="_blank"
-            rel="noreferrer"
-            className="rounded border border-zinc-800 px-3 py-1.5 text-zinc-400 hover:text-cyan-400"
-          >
-            → MissionNet Operations Console
-          </a>
-          <a
-            href="http://127.0.0.1:3000"
-            target="_blank"
-            rel="noreferrer"
-            className="rounded border border-zinc-800 px-3 py-1.5 text-zinc-400 hover:text-cyan-400"
-          >
-            → Sentinel SOC Dashboard
-          </a>
         </div>
 
         {runs && runs.length > 0 && (
