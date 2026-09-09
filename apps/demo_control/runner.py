@@ -12,6 +12,7 @@ proxy exception.
 import asyncio
 import logging
 from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -31,6 +32,13 @@ from apps.demo_control.verification import (
 logger = logging.getLogger("demo_control.runner")
 
 TERMINAL_STATES = {"PASSED", "FAILED", "CANCELLED"}
+SERVICE_STARTUP_TIMEOUT_SECONDS = 75.0
+SERVICE_STARTUP_RETRY_SECONDS = 3.0
+TRANSIENT_STARTUP_CODES = {
+    "UPSTREAM_GATEWAY_ERROR",
+    "UPSTREAM_TRANSPORT_ERROR",
+    "UPSTREAM_INVALID_RESPONSE",
+}
 
 
 async def _load_run(run_id: str) -> ScenarioRun | None:
@@ -88,6 +96,90 @@ async def _append_timeline(
 async def _is_cancelled(run_id: str) -> bool:
     run = await _load_run(run_id)
     return run is not None and run.cancel_requested
+
+
+async def _wait_for_dependency_ready(
+    run_id: str,
+    *,
+    component: str,
+    base_url: str,
+    path: str,
+    expected_type: type | tuple[type, ...] | None = None,
+    allow_non_json_success: bool = False,
+) -> Any:
+    """Wait through a bounded cloud cold-start window without pretending the dependency is healthy.
+
+    Render free-tier services can legitimately be asleep when an employer opens the demo. A short
+    sequence of 502s during wake-up is an infrastructure state, not a Sentinel detection failure.
+    This helper keeps the run in PREPARING, records visible operational events, and only proceeds
+    after a real successful health response. Non-transient 4xx/application failures still fail
+    immediately.
+    """
+
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + SERVICE_STARTUP_TIMEOUT_SECONDS
+    attempt = 0
+    last_error: UpstreamResponseError | None = None
+
+    while True:
+        if await _is_cancelled(run_id):
+            raise UpstreamResponseError(
+                code="RUN_CANCELLED",
+                component=component,
+                operation=f"GET {path}",
+                message="run cancelled while waiting for dependency readiness",
+                retryable=False,
+            )
+
+        attempt += 1
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=15.0) as client:
+                result = await request_json(
+                    client,
+                    "GET",
+                    path,
+                    component=component,
+                    retry_safe=True,
+                    allow_non_json_success=allow_non_json_success,
+                    expected_type=expected_type,
+                )
+            if attempt > 1:
+                await _append_timeline(
+                    run_id,
+                    f"{component} became ready after cloud startup wait",
+                    component=component,
+                    code="DEPENDENCY_READY",
+                )
+            return result
+        except UpstreamResponseError as exc:
+            last_error = exc
+            if exc.code not in TRANSIENT_STARTUP_CODES:
+                raise
+
+            remaining = max(0, int(deadline - loop.time()))
+            if remaining <= 0:
+                break
+
+            await _append_timeline(
+                run_id,
+                f"{component} is starting or temporarily unavailable; waiting for readiness ({remaining}s window remaining)",
+                level="WARN",
+                code="DEPENDENCY_WARMING",
+                component=component,
+            )
+            await asyncio.sleep(min(SERVICE_STARTUP_RETRY_SECONDS, max(0.1, deadline - loop.time())))
+
+    detail = str(last_error) if last_error is not None else "no health response received"
+    raise UpstreamResponseError(
+        code="DEPENDENCY_STARTUP_TIMEOUT",
+        component=component,
+        operation=f"GET {path}",
+        message=(
+            f"service did not become ready within {int(SERVICE_STARTUP_TIMEOUT_SECONDS)} seconds. "
+            f"Last observed condition: {detail}"
+        ),
+        retryable=True,
+    )
 
 
 async def _reset_lab() -> dict:
@@ -172,41 +264,45 @@ async def run_scenario(run_id: str) -> None:
 
 
 async def _execute(run_id: str, scenario: ScenarioDefinition) -> None:
-    await _update_run(run_id, status="PREPARING", current_step="preconditions")
+    await _update_run(run_id, status="PREPARING", current_step="dependency:missionnet")
     await _append_timeline(run_id, "Preparing scenario and validating upstream services")
 
     try:
-        async with httpx.AsyncClient(base_url=settings.missionnet_base_url, timeout=15.0) as mn_client:
-            health = await request_json(
-                mn_client,
-                "GET",
-                "/health",
-                component="MissionNet",
-                retry_safe=True,
-                expected_type=dict,
-            )
+        health = await _wait_for_dependency_ready(
+            run_id,
+            component="MissionNet",
+            base_url=settings.missionnet_base_url,
+            path="/health",
+            expected_type=dict,
+        )
     except UpstreamResponseError as exc:
-        await _fail(run_id, str(exc))
+        if exc.code == "RUN_CANCELLED":
+            await _finish_cancelled(run_id)
+        else:
+            await _fail(run_id, str(exc))
         return
 
     if not health.get("status"):
         await _fail(run_id, "[UPSTREAM_HEALTH_ERROR] MissionNet GET /health returned no status field")
         return
 
+    await _update_run(run_id, current_step="dependency:sentinel")
     try:
-        async with httpx.AsyncClient(base_url=settings.sentinel_base_url, timeout=15.0) as s_client:
-            await request_json(
-                s_client,
-                "GET",
-                "/api/v1/health",
-                component="Sentinel API",
-                retry_safe=True,
-                allow_non_json_success=True,
-            )
+        await _wait_for_dependency_ready(
+            run_id,
+            component="Sentinel API",
+            base_url=settings.sentinel_base_url,
+            path="/api/v1/health",
+            allow_non_json_success=True,
+        )
     except UpstreamResponseError as exc:
-        await _fail(run_id, str(exc))
+        if exc.code == "RUN_CANCELLED":
+            await _finish_cancelled(run_id)
+        else:
+            await _fail(run_id, str(exc))
         return
 
+    await _update_run(run_id, current_step="preconditions")
     await _append_timeline(run_id, "MissionNet and Sentinel API health checks passed")
 
     if scenario.reset.strategy == "lab_reset":
