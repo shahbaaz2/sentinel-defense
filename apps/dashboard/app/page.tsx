@@ -1,6 +1,9 @@
+import Link from "next/link";
 import { OverviewLive } from "./OverviewLive";
 
 const API_BASE = process.env.SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
+const DEMO_CONTROL_URL =
+  process.env.NEXT_PUBLIC_DEMO_CONTROL_URL ?? "https://sentinel-defense-ov8q.vercel.app";
 
 type Assurance = {
   inference_location: string;
@@ -37,20 +40,46 @@ export default async function Home() {
     getJSON<MetricsSummary>("/api/v1/metrics/summary"),
   ]);
 
+  const aiStatus = assurance?.ai_analyst_status ?? metrics?.ai_analyst_status ?? "UNKNOWN";
+
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
       <main className="flex w-full max-w-4xl flex-col gap-8 px-8 py-16">
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4">
           <span className="w-fit rounded bg-amber-500/20 px-2 py-1 text-xs font-semibold tracking-wide text-amber-700 dark:text-amber-400">
             SYNTHETIC LAB — DEFENSIVE ONLY
           </span>
-          <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-            Mission Cyber Posture
-          </h1>
-          <p className="text-zinc-600 dark:text-zinc-400">
-            Deterministic detection and correlation only.{" "}
-            <span className="font-medium">AI Analyst: NOT ENABLED</span> — scheduled for a later
-            phase.
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
+              Mission Cyber Posture
+            </h1>
+            <p className="mt-2 text-zinc-600 dark:text-zinc-400">
+              Deterministic detection and correlation with an evidence-grounded AI Analyst.
+              <span className="font-medium"> AI Analyst: {aiStatus}</span>
+              {assurance?.inference_location ? ` · ${assurance.inference_location}` : ""}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <a
+              href={DEMO_CONTROL_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-md bg-black px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+            >
+              LAUNCH LIVE DEMO ↗
+            </a>
+            <Link
+              href="/incidents"
+              className="rounded-md border border-zinc-300 px-5 py-2.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            >
+              View Incidents
+            </Link>
+          </div>
+          <p className="max-w-2xl text-xs text-zinc-500">
+            Launch the Scenario Control console to run a guided synthetic attack simulation such as
+            SCN-010, then return here to inspect detections, correlated incidents, AI analysis, and
+            the human-authorized response workflow.
           </p>
         </div>
 
