@@ -36,11 +36,12 @@ async function getJSON<T>(path: string): Promise<T | null> {
 }
 
 const SCENARIOS = [
-  { id: "SCN-010", title: "Multi-Signal Compromise", type: "End-to-end", expected: "5 detections · 3 incidents" },
-  { id: "SCN-001", title: "Credential Pressure", type: "Identity", expected: "DET-001" },
-  { id: "SCN-002", title: "Service Identity Compromise", type: "Service identity", expected: "DET-006" },
-  { id: "SCN-003", title: "Critical Service Degradation", type: "Asset state", expected: "DET-002" },
-  { id: "SCN-004", title: "Data Access Burst", type: "Behavioral", expected: "DET-003" },
+  { id: "SCN-010", title: "Multi-Signal Compromise", type: "End-to-end", expected: "5 detections · 3 incidents", note: "Cloud validated" },
+  { id: "SCN-001", title: "Credential Pressure", type: "Identity", expected: "DET-001", note: "Controlled workflow" },
+  { id: "SCN-002", title: "Service Identity Compromise", type: "Service identity", expected: "DET-006", note: "Controlled workflow" },
+  { id: "SCN-003", title: "Critical Service Degradation", type: "Asset state", expected: "DET-002", note: "Controlled workflow" },
+  { id: "SCN-004", title: "Data Access Burst", type: "Behavioral", expected: "DET-003", note: "Controlled workflow" },
+  { id: "SCN-NET-001", title: "Network Sensor Detection", type: "Suricata + Zeek", expected: "NET-001 · NET-002 · NET-003", note: "Requires sensor runtime" },
 ] as const;
 
 export default async function Home() {
@@ -82,11 +83,11 @@ export default async function Home() {
             <div>
               <p className="soc-kicker">Controlled validation library</p>
               <h2 className="mt-1 text-sm font-semibold text-white">Scenario Operations</h2>
-              <p className="mt-1 text-[11px] text-slate-500">Every scenario opens in the same enterprise security console and uses real persisted run evidence.</p>
+              <p className="mt-1 text-[11px] text-slate-500">Every repository scenario opens in the same enterprise security console and derives progress from persisted evidence.</p>
             </div>
-            <span className="rounded border border-slate-700 bg-[#0d1b29] px-2.5 py-1 text-[10px] font-mono text-slate-400">5 employer-demo workflows</span>
+            <span className="rounded border border-slate-700 bg-[#0d1b29] px-2.5 py-1 text-[10px] font-mono text-slate-400">6 controlled workflows</span>
           </div>
-          <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             {SCENARIOS.map((scenario) => (
               <a
                 key={scenario.id}
@@ -97,12 +98,13 @@ export default async function Home() {
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-mono text-[10px] font-bold text-sky-300">{scenario.id}</span>
-                  <span className="text-[9px] uppercase tracking-wider text-slate-600">{scenario.type}</span>
+                  <span className="text-[8px] uppercase tracking-wider text-slate-600">{scenario.type}</span>
                 </div>
                 <h3 className="mt-3 min-h-10 text-xs font-semibold leading-5 text-slate-200 group-hover:text-white">{scenario.title}</h3>
                 <div className="mt-3 border-t border-slate-800 pt-3">
-                  <p className="text-[9px] uppercase tracking-wider text-slate-600">Expected security result</p>
-                  <p className="mt-1 text-[10px] font-medium text-slate-400">{scenario.expected}</p>
+                  <p className="text-[8px] uppercase tracking-wider text-slate-600">Expected security result</p>
+                  <p className="mt-1 text-[9px] font-medium leading-4 text-slate-400">{scenario.expected}</p>
+                  <p className="mt-2 text-[8px] text-slate-600">{scenario.note}</p>
                 </div>
                 <p className="mt-3 text-[10px] font-semibold text-sky-400">Open controlled run ↗</p>
               </a>
