@@ -1,14 +1,10 @@
 """Cloud provider backed by DeepSeek's OpenAI-compatible Chat Completions API.
 
-Exists for deployments where no Apple-Silicon host is available to run `MLXProvider` (e.g. a
-Render-hosted API process) - the AI Analyst's contract, guardrails, and read-only role are
-completely unchanged: this provider still only ever returns schema-validated structured output
-built from the same curated evidence pack, still cannot write to any Sentinel/MissionNet table,
-and still cannot approve or execute anything (see docs/ai-security-boundaries.md). The only real
-difference from `MLXProvider` is where inference happens - a real network call to a third-party
-API instead of an in-process model - which is why `external_ai_enabled` must be explicitly set
-alongside `SENTINEL_LLM_PROVIDER=deepseek`: enabling this provider is a genuine, honest change to
-System Assurance's "internet required" and "inference location" claims, never silently implied.
+The provider remains advisory and read-only. In addition to schema validation, this implementation
+classifies external-provider failures so operators can distinguish a Sentinel problem from an API
+billing/auth/rate-limit/upstream problem. DeepSeek's documented HTTP 402 is treated explicitly as
+insufficient balance. The status check uses DeepSeek's balance endpoint and does not perform an
+inference request.
 """
 
 import asyncio
@@ -31,8 +27,6 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 
 
 def _extract_json_object(text: str) -> dict:
-    """Mirrors MLXProvider's own extraction - DeepSeek's `response_format: json_object` mode makes
-    this the common case rather than the fallback, but a model can still wrap output in prose."""
     start = text.find("{")
     if start == -1:
         raise ValueError("no JSON object found in model output")
@@ -41,6 +35,56 @@ def _extract_json_object(text: str) -> dict:
     if not isinstance(obj, dict):
         raise ValueError("decoded JSON is not an object")
     return obj
+
+
+def _body_preview(resp: httpx.Response, limit: int = 240) -> str:
+    text = resp.text.strip().replace("\n", " ")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _http_error(resp: httpx.Response) -> StructuredCompletionError:
+    status = resp.status_code
+    body = _body_preview(resp).lower()
+
+    # DeepSeek documents HTTP 402 as insufficient balance. Match body text too so a compatible
+    # gateway that remaps the status still produces the correct operator diagnosis.
+    if status == 402 or "insufficient balance" in body or "insufficient_balance" in body:
+        return StructuredCompletionError(
+            "AI advisory is unavailable because the configured DeepSeek account has insufficient API balance. "
+            "Sentinel's deterministic detection, correlation, incident, and response controls remain operational.",
+            code="AI_PROVIDER_BILLING",
+            retryable=False,
+        )
+    if status in {401, 403}:
+        return StructuredCompletionError(
+            "AI provider authentication failed. Check the configured DeepSeek API credential. "
+            "Sentinel's deterministic security workflow is unaffected.",
+            code="AI_PROVIDER_AUTH",
+            retryable=False,
+        )
+    if status == 429:
+        return StructuredCompletionError(
+            "AI provider rate limit reached. Retry the advisory analysis later; Sentinel's deterministic security workflow is unaffected.",
+            code="AI_PROVIDER_RATE_LIMIT",
+            retryable=True,
+        )
+    if status in {500, 502, 503, 504}:
+        return StructuredCompletionError(
+            f"AI provider service is temporarily unavailable (HTTP {status}). Retry later; Sentinel's deterministic security workflow is unaffected.",
+            code="AI_PROVIDER_UPSTREAM",
+            retryable=True,
+        )
+    if status in {400, 422}:
+        return StructuredCompletionError(
+            f"AI provider rejected the analysis request (HTTP {status}). This is an AI integration/request issue, not a Sentinel detection failure.",
+            code="AI_PROVIDER_REQUEST",
+            retryable=False,
+        )
+    return StructuredCompletionError(
+        f"AI provider request failed with HTTP {status}. Sentinel's deterministic security workflow is unaffected.",
+        code="AI_PROVIDER_HTTP_ERROR",
+        retryable=False,
+    )
 
 
 class DeepSeekProvider:
@@ -59,11 +103,27 @@ class DeepSeekProvider:
         self._base_url = base_url.rstrip("/")
         self._transport = transport
         self._last_error: str | None = None
+        self._last_error_code: str | None = None
         self._loaded_at: datetime | None = None
 
     def __repr__(self) -> str:
-        # Never let a stray repr()/traceback leak the key - same discipline as SplunkClient.
         return f"DeepSeekProvider(model={self._model_name!r}, api_key=***redacted***)"
+
+    @property
+    def last_error_code(self) -> str | None:
+        return self._last_error_code
+
+    @property
+    def last_error_message(self) -> str | None:
+        return self._last_error
+
+    def _set_error(self, error: StructuredCompletionError) -> None:
+        self._last_error_code = error.code
+        self._last_error = str(error)
+
+    def _clear_error(self) -> None:
+        self._last_error_code = None
+        self._last_error = None
 
     async def _one_completion_attempt(
         self, *, system_prompt: str, user_message: str, max_tokens: int, timeout_seconds: float
@@ -87,9 +147,31 @@ class DeepSeekProvider:
                     "response_format": {"type": "json_object"},
                 },
             )
-            resp.raise_for_status()
-            body = resp.json()
-        return body["choices"][0]["message"]["content"]
+            if resp.status_code >= 400:
+                error = _http_error(resp)
+                logger.warning(
+                    "deepseek_request_failed code=%s status=%s detail=%s",
+                    error.code,
+                    resp.status_code,
+                    _body_preview(resp),
+                )
+                raise error
+            try:
+                body = resp.json()
+            except ValueError as exc:
+                raise StructuredCompletionError(
+                    "AI provider returned a non-JSON API response. Sentinel's deterministic security workflow is unaffected.",
+                    code="AI_PROVIDER_INVALID_RESPONSE",
+                    retryable=True,
+                ) from exc
+        try:
+            return body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise StructuredCompletionError(
+                "AI provider returned an unexpected response structure. Sentinel's deterministic security workflow is unaffected.",
+                code="AI_PROVIDER_INVALID_RESPONSE",
+                retryable=True,
+            ) from exc
 
     async def structured_completion(
         self,
@@ -101,7 +183,13 @@ class DeepSeekProvider:
         timeout_seconds: float,
     ) -> T:
         if not self._api_key:
-            raise StructuredCompletionError("DeepSeek provider has no API key configured")
+            error = StructuredCompletionError(
+                "AI advisory is unavailable because no DeepSeek API key is configured. Sentinel's deterministic security workflow is unaffected.",
+                code="AI_PROVIDER_CONFIG",
+                retryable=False,
+            )
+            self._set_error(error)
+            raise error
 
         schema_hint = json.dumps(output_schema.model_json_schema())
         user_message = (
@@ -137,36 +225,101 @@ class DeepSeekProvider:
                 )
                 parsed = _extract_json_object(raw)
                 result = output_schema.model_validate(parsed)
-                self._last_error = None
+                self._clear_error()
                 self._loaded_at = self._loaded_at or datetime.now(UTC)
                 return result
             except TimeoutError as exc:
-                self._last_error = f"timed out after {timeout_seconds}s"
-                raise StructuredCompletionError(
-                    f"DeepSeek inference exceeded {timeout_seconds}s timeout"
-                ) from exc
-            except httpx.HTTPStatusError as exc:
-                self._last_error = f"HTTP {exc.response.status_code}"
-                raise StructuredCompletionError(
-                    f"DeepSeek API returned {exc.response.status_code}: {exc.response.text}"
-                ) from exc
+                error = StructuredCompletionError(
+                    f"AI provider analysis exceeded the configured {timeout_seconds}s timeout. Retry later; Sentinel's deterministic security workflow is unaffected.",
+                    code="AI_PROVIDER_TIMEOUT",
+                    retryable=True,
+                )
+                self._set_error(error)
+                raise error from exc
+            except StructuredCompletionError as exc:
+                self._set_error(exc)
+                raise
             except httpx.HTTPError as exc:
-                self._last_error = str(exc)
-                raise StructuredCompletionError(f"DeepSeek API request failed: {exc}") from exc
+                error = StructuredCompletionError(
+                    "AI provider network request failed. Retry later; Sentinel's deterministic security workflow is unaffected.",
+                    code="AI_PROVIDER_NETWORK",
+                    retryable=True,
+                )
+                self._set_error(error)
+                logger.warning("deepseek_network_failure detail=%s", exc)
+                raise error from exc
             except (ValueError, ValidationError, json.JSONDecodeError, KeyError) as exc:
                 last_error = exc
-                self._last_error = str(exc)
                 logger.warning("DeepSeek structured output invalid on attempt %d: %s", attempt, exc)
 
-        raise StructuredCompletionError(
-            f"DeepSeek model did not return schema-valid JSON after retry: {last_error}"
+        error = StructuredCompletionError(
+            "AI provider returned output that did not match Sentinel's required assessment schema after one retry. "
+            "The invalid output was rejected and was not treated as evidence.",
+            code="AI_PROVIDER_INVALID_OUTPUT",
+            retryable=True,
         )
+        self._set_error(error)
+        logger.warning("deepseek_invalid_output final_error=%s", last_error)
+        raise error
 
     async def get_status(self) -> ProviderStatus:
         if not self._api_key:
+            self._last_error_code = "AI_PROVIDER_CONFIG"
+            self._last_error = "No DeepSeek API key is configured."
             return ProviderStatus.DISABLED
         if self._last_error is not None:
             return ProviderStatus.DEGRADED
+        if self._loaded_at is not None:
+            return ProviderStatus.READY
+
+        # Fresh provider instance: use DeepSeek's balance endpoint as a no-inference operational
+        # check. This is what lets the UI say "provider balance" instead of mislabeling it as a
+        # Sentinel/system failure.
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=8.0,
+                transport=self._transport,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+            ) as client:
+                resp = await client.get("/user/balance")
+        except httpx.HTTPError as exc:
+            error = StructuredCompletionError(
+                "AI provider health check could not reach DeepSeek. Sentinel's deterministic security workflow remains operational.",
+                code="AI_PROVIDER_NETWORK",
+                retryable=True,
+            )
+            self._set_error(error)
+            logger.warning("deepseek_balance_check_network_failure detail=%s", exc)
+            return ProviderStatus.DEGRADED
+
+        if resp.status_code >= 400:
+            error = _http_error(resp)
+            self._set_error(error)
+            return ProviderStatus.DEGRADED
+
+        try:
+            body = resp.json()
+        except ValueError:
+            error = StructuredCompletionError(
+                "AI provider health check returned a non-JSON response. Sentinel's deterministic security workflow remains operational.",
+                code="AI_PROVIDER_STATUS_INVALID_RESPONSE",
+                retryable=True,
+            )
+            self._set_error(error)
+            return ProviderStatus.DEGRADED
+
+        if body.get("is_available") is False:
+            error = StructuredCompletionError(
+                "AI advisory is unavailable because the configured DeepSeek account has insufficient API balance. "
+                "Sentinel's deterministic detection, correlation, incident, and response controls remain operational.",
+                code="AI_PROVIDER_BILLING",
+                retryable=False,
+            )
+            self._set_error(error)
+            return ProviderStatus.DEGRADED
+
+        self._clear_error()
         return ProviderStatus.READY
 
     def get_provenance(self) -> ModelProvenance:
