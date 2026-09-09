@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { RunScenarioButton } from "./RunScenarioButton";
 
 const API_BASE = process.env.DEMOCONTROL_API_BASE_URL ?? "http://127.0.0.1:8100";
 
@@ -75,18 +74,19 @@ export default async function DemoControlHome() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="rounded bg-amber-500/20 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-amber-300">
-                  Flagship experience
+                  Immersive scenario library
                 </span>
-                <span className="text-[10px] uppercase tracking-widest text-cyan-500">SCN-010</span>
+                <span className="text-[10px] uppercase tracking-widest text-cyan-500">6 live GUI replays</span>
               </div>
-              <h2 className="mt-3 text-lg font-semibold text-white">Immersive Live Attack Replay</h2>
+              <h2 className="mt-3 text-lg font-semibold text-white">Sentinel Live Cyber Range</h2>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-500">
-                Watch credential pressure, mission-service degradation, deterministic Sentinel detections,
-                incident correlation, evidence verification, and the handoff into AI-assisted human-approved response.
+                Launch any scenario as a paced visual replay backed by the real Demo Control run,
+                MissionNet or network-sensor evidence, deterministic Sentinel detections, incident
+                correlation, evidence verification, and analyst handoff.
               </p>
             </div>
             <span className="whitespace-nowrap rounded-lg bg-cyan-400 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-black group-hover:bg-cyan-300">
-              Launch GUI Demo →
+              Open Scenario Library →
             </span>
           </div>
         </Link>
@@ -118,36 +118,32 @@ export default async function DemoControlHome() {
             <p className="text-sm text-red-400">Demo Control API unreachable at {API_BASE}.</p>
           )}
           <div className="flex flex-col gap-3">
-            {scenarios?.map((s) => (
+            {scenarios?.map((scenario) => (
               <div
-                key={s.id}
+                key={scenario.id}
                 className="flex items-center justify-between gap-4 rounded border border-zinc-800 bg-zinc-950 p-4"
               >
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm text-cyan-400">{s.id}</span>
-                    <span className="font-medium text-white">{s.name}</span>
-                    {s.id === "SCN-010" && (
+                    <span className="font-mono text-sm text-cyan-400">{scenario.id}</span>
+                    <span className="font-medium text-white">{scenario.name}</span>
+                    {scenario.id === "SCN-010" && (
                       <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-400">
                         Flagship
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 max-w-xl text-xs text-zinc-500">{s.description}</p>
+                  <p className="mt-1 max-w-xl text-xs text-zinc-500">{scenario.description}</p>
                   <p className="mt-1 text-xs text-zinc-600">
-                    {s.step_count} step(s) · {s.risk_level}
+                    {scenario.step_count} step(s) · {scenario.risk_level}
                   </p>
                 </div>
-                {s.id === "SCN-010" ? (
-                  <Link
-                    href="/live-demo"
-                    className="whitespace-nowrap rounded bg-cyan-500 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-black hover:bg-cyan-400"
-                  >
-                    Launch Replay
-                  </Link>
-                ) : (
-                  <RunScenarioButton scenarioId={s.id} />
-                )}
+                <Link
+                  href={`/live-demo#${scenario.id}`}
+                  className="whitespace-nowrap rounded bg-cyan-500 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-black hover:bg-cyan-400"
+                >
+                  Launch Replay
+                </Link>
               </div>
             ))}
           </div>
@@ -159,24 +155,24 @@ export default async function DemoControlHome() {
               Recent Runs
             </h2>
             <ul className="flex flex-col gap-2">
-              {runs.slice(0, 10).map((r) => (
-                <li key={r.run_id}>
+              {runs.slice(0, 10).map((run) => (
+                <li key={run.run_id}>
                   <Link
-                    href={`/runs/${r.run_id}`}
+                    href={`/runs/${run.run_id}`}
                     className="flex items-center justify-between rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs hover:border-cyan-800"
                   >
-                    <span className="font-mono text-zinc-400">{r.run_id.slice(0, 13)}…</span>
-                    <span className="text-zinc-500">{r.scenario_id}</span>
+                    <span className="font-mono text-zinc-400">{run.run_id.slice(0, 13)}…</span>
+                    <span className="text-zinc-500">{run.scenario_id}</span>
                     <span
                       className={
-                        r.status === "PASSED"
+                        run.status === "PASSED"
                           ? "text-emerald-400"
-                          : r.status === "FAILED"
+                          : run.status === "FAILED"
                             ? "text-red-400"
                             : "text-amber-400"
                       }
                     >
-                      {r.status}
+                      {run.status}
                     </span>
                   </Link>
                 </li>
