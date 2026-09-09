@@ -23,10 +23,12 @@ router = APIRouter(prefix="/api/v1")
 
 @router.get("/status", response_model=SystemStatusOut)
 async def system_status():
-    """Return operational status without ever crashing on an empty/non-JSON upstream response."""
+    """Return dependency status without leaking decoder/proxy failures to the console."""
     missionnet_status = "UNREACHABLE"
     sentinel_status = "OFFLINE"
-    async with httpx.AsyncClient(timeout=3.0) as client:
+    ai_analyst_status = "UNKNOWN"
+
+    async with httpx.AsyncClient(timeout=8.0) as client:
         try:
             body = await request_json(
                 client,
@@ -39,6 +41,7 @@ async def system_status():
             missionnet_status = str(body.get("status", "unknown")).upper()
         except UpstreamResponseError:
             pass
+
         try:
             await request_json(
                 client,
@@ -51,7 +54,26 @@ async def system_status():
             sentinel_status = "ONLINE"
         except UpstreamResponseError:
             pass
-    return SystemStatusOut(missionnet_status=missionnet_status, sentinel_status=sentinel_status)
+
+        if sentinel_status == "ONLINE":
+            try:
+                ai = await request_json(
+                    client,
+                    "GET",
+                    f"{settings.sentinel_base_url}/api/v1/ai/provider-diagnostics",
+                    component="Sentinel AI Advisory",
+                    retry_safe=True,
+                    expected_type=dict,
+                )
+                ai_analyst_status = str(ai.get("status", "UNKNOWN")).upper()
+            except UpstreamResponseError:
+                ai_analyst_status = "UNAVAILABLE"
+
+    return SystemStatusOut(
+        missionnet_status=missionnet_status,
+        sentinel_status=sentinel_status,
+        ai_analyst_status=ai_analyst_status,
+    )
 
 
 @router.get("/scenarios", response_model=list[ScenarioSummary])
@@ -155,7 +177,7 @@ async def reset_run(run_id: str, session: AsyncSession = Depends(get_session)):
         raise HTTPException(status_code=404, detail="run not found")
     try:
         await reset_after_run(run_id)
-    except UpstreamResponseError as exc:
+    except (httpx.HTTPError, UpstreamResponseError) as exc:
         raise HTTPException(status_code=502, detail=f"reset failed: {exc}") from exc
     await session.refresh(run)
     return run
