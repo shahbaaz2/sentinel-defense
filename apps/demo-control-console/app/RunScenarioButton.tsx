@@ -14,16 +14,18 @@ export function RunScenarioButton({ scenarioId }: { scenarioId: string }) {
     setStarting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/scenarios/${scenarioId}/run`, {
+      const response = await fetch(`${API_BASE}/api/v1/scenarios/${scenarioId}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ actor: "demo-operator" }),
       });
-      if (!res.ok) throw new Error(`start failed: ${res.status}`);
-      const run = await res.json();
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const run = await response.json();
       router.push(`/runs/${run.run_id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "failed to start run");
+      setError(
+        `Unable to start run${err instanceof Error ? ` (${err.message})` : ""}. Review Demo Control service health.`,
+      );
       setStarting(false);
     }
   }
@@ -33,11 +35,11 @@ export function RunScenarioButton({ scenarioId }: { scenarioId: string }) {
       <button
         onClick={handleRun}
         disabled={starting}
-        className="w-full rounded-lg border border-white/[0.09] bg-white/[0.035] px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-zinc-300 transition hover:border-cyan-400/30 hover:bg-cyan-400/[0.07] hover:text-cyan-200 disabled:cursor-wait disabled:opacity-50"
+        className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-wait disabled:opacity-50"
       >
-        {starting ? "Starting…" : "Run Scenario"}
+        {starting ? "Starting…" : "Run directly"}
       </button>
-      {error && <span className="break-words text-[9px] leading-4 text-red-400">{error}</span>}
+      {error && <span className="break-words text-[10px] leading-4 text-red-700">{error}</span>}
     </div>
   );
 }
