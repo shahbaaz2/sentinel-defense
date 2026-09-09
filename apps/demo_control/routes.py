@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.demo_control.config import settings
 from apps.demo_control.db import get_session
+from apps.demo_control.http_client import UpstreamResponseError, request_json
 from apps.demo_control.models import ScenarioRun
 from apps.demo_control.runner import reset_after_run, run_scenario
 from apps.demo_control.scenarios import list_scenarios, load_scenario
@@ -22,18 +23,33 @@ router = APIRouter(prefix="/api/v1")
 
 @router.get("/status", response_model=SystemStatusOut)
 async def system_status():
+    """Return operational status without ever crashing on an empty/non-JSON upstream response."""
     missionnet_status = "UNREACHABLE"
     sentinel_status = "OFFLINE"
     async with httpx.AsyncClient(timeout=3.0) as client:
         try:
-            resp = await client.get(f"{settings.missionnet_base_url}/health")
-            missionnet_status = resp.json().get("status", "unknown").upper()
-        except httpx.HTTPError:
+            body = await request_json(
+                client,
+                "GET",
+                f"{settings.missionnet_base_url}/health",
+                component="MissionNet",
+                retry_safe=True,
+                expected_type=dict,
+            )
+            missionnet_status = str(body.get("status", "unknown")).upper()
+        except UpstreamResponseError:
             pass
         try:
-            resp = await client.get(f"{settings.sentinel_base_url}/api/v1/health")
-            sentinel_status = "ONLINE" if resp.status_code == 200 else "OFFLINE"
-        except httpx.HTTPError:
+            await request_json(
+                client,
+                "GET",
+                f"{settings.sentinel_base_url}/api/v1/health",
+                component="Sentinel API",
+                retry_safe=True,
+                allow_non_json_success=True,
+            )
+            sentinel_status = "ONLINE"
+        except UpstreamResponseError:
             pass
     return SystemStatusOut(missionnet_status=missionnet_status, sentinel_status=sentinel_status)
 
@@ -139,7 +155,7 @@ async def reset_run(run_id: str, session: AsyncSession = Depends(get_session)):
         raise HTTPException(status_code=404, detail="run not found")
     try:
         await reset_after_run(run_id)
-    except httpx.HTTPError as exc:
+    except UpstreamResponseError as exc:
         raise HTTPException(status_code=502, detail=f"reset failed: {exc}") from exc
     await session.refresh(run)
     return run
