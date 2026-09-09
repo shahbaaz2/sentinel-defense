@@ -1,29 +1,37 @@
-"""Every action a scenario step can perform - and nothing else. Each function makes exactly one
-real HTTP call to MissionNet's public or lab-control API. There is no action here, or anywhere in
-this package, that writes to Sentinel or fabricates a MissionNet event - that is the whole point
-of the Scenario Controller's safety boundary (blueprint §17, Phase 3 continuation prompt §3).
+"""Every action a scenario step can perform - and nothing else.
 
-Every call also forwards `scenario_id` (injected into `parameters` by the runner before dispatch)
-so MissionNet's own audit trail - and, downstream, Sentinel's NormalizedEventRecord.scenario_id -
-carries genuine scenario provenance end to end, not just within Demo Control's own run record.
+Each function makes exactly one logical call to MissionNet's public or lab-control API. There is no
+action here, or anywhere in this package, that writes to Sentinel or fabricates a MissionNet event.
+Every call forwards scenario provenance so later verification can prove the evidence chain.
+
+Cloud reliability is handled by ``apps.demo_control.http_client``. Side-effecting actions are never
+blindly retried unless the operation is explicitly known to be replay-safe. A successful 2xx with
+an empty/non-JSON body is accepted as transport metadata because the later evidence-verification
+stage - not the response body - decides whether the action actually occurred.
 """
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 
 from apps.demo_control.config import settings
+from apps.demo_control.http_client import (
+    ERROR_DETAIL_LIMIT,
+    MAX_ATTEMPTS,
+    RETRY_BACKOFF_SECONDS,
+    TRANSIENT_STATUS_CODES,
+    UpstreamResponseError,
+    request_json,
+    short_detail,
+)
 from services.sensor_lab.pipeline import SensorLabError, run_network_sensor_lab
 
-# A cloud host's own edge/gateway returns these on a cold start or a brief restart - genuinely
-# transient, safe to retry. Everything else (4xx application errors, 500s from the app itself) is
-# a real failure and must never be retried into a fake success.
-_TRANSIENT_STATUS_CODES = {502, 503, 504}
-_MAX_ATTEMPTS = 3
-_RETRY_BACKOFF_SECONDS = 0.5
-_ERROR_DETAIL_LIMIT = 300
+# Backward-compatible module constants used by existing tests/documentation.
+_TRANSIENT_STATUS_CODES = TRANSIENT_STATUS_CODES
+_MAX_ATTEMPTS = MAX_ATTEMPTS
+_RETRY_BACKOFF_SECONDS = RETRY_BACKOFF_SECONDS
+_ERROR_DETAIL_LIMIT = ERROR_DETAIL_LIMIT
 
 
 class ActionError(Exception):
@@ -38,54 +46,48 @@ def _lab_headers() -> dict[str, str]:
 
 
 def _short_detail(resp: httpx.Response) -> str:
-    """Never let a proxy's HTML error page (a Render/nginx-style 502 page can be several KB) end
-    up verbatim in an ActionError message - it becomes a ScenarioRun.failure_reason, which the
-    Demo Control console and the live-demo GUI both may show directly to a viewer."""
-    text = resp.text.strip().replace("\n", " ")
-    if len(text) > _ERROR_DETAIL_LIMIT:
-        text = text[:_ERROR_DETAIL_LIMIT] + "…"
-    return text
+    """Compatibility wrapper around the centralized bounded response formatter."""
+    return short_detail(resp)
+
+
+async def _action_request(
+    client: httpx.AsyncClient,
+    method: str,
+    path: str,
+    *,
+    retry_safe: bool = False,
+    **kwargs: Any,
+) -> dict:
+    try:
+        result = await request_json(
+            client,
+            method,
+            path,
+            component="MissionNet",
+            retry_safe=retry_safe,
+            allow_non_json_success=True,
+            **kwargs,
+        )
+    except UpstreamResponseError as exc:
+        raise ActionError(path, str(exc)) from exc
+    if not isinstance(result, dict):
+        # MissionNet action APIs are expected to return objects. A non-object 2xx response is not
+        # used as evidence, so preserve only transport metadata and let verification decide truth.
+        return {"accepted": True, "http_status": 200, "response_format": type(result).__name__}
+    return result
 
 
 async def _post(client: httpx.AsyncClient, path: str, **kwargs) -> dict:
-    resp = await client.post(path, **kwargs)
-    if resp.status_code >= 400:
-        raise ActionError(path, f"{resp.status_code}: {_short_detail(resp)}")
-    return resp.json()
+    return await _action_request(client, "POST", path, retry_safe=False, **kwargs)
 
 
 async def _get(client: httpx.AsyncClient, path: str, **kwargs) -> dict:
-    resp = await client.get(path, **kwargs)
-    if resp.status_code >= 400:
-        raise ActionError(path, f"{resp.status_code}: {_short_detail(resp)}")
-    return resp.json()
+    return await _action_request(client, "GET", path, retry_safe=False, **kwargs)
 
 
 async def _get_with_bounded_retry(client: httpx.AsyncClient, path: str, **kwargs) -> dict:
-    """Retries only a transient gateway status (502/503/504) or a transport-level failure
-    (connection reset, timeout) - up to `_MAX_ATTEMPTS` total tries with a short linear backoff.
-    A genuine application error (4xx, or a 500 from the app itself) raises immediately on the
-    first attempt and is never retried into a fake success - see DECISIONS.md."""
-    last_exc: Exception | None = None
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        try:
-            resp = await client.get(path, **kwargs)
-        except (httpx.TransportError, httpx.TimeoutException) as exc:
-            last_exc = ActionError(path, f"transport error on attempt {attempt}: {exc}")
-        else:
-            if resp.status_code not in _TRANSIENT_STATUS_CODES:
-                if resp.status_code >= 400:
-                    raise ActionError(path, f"{resp.status_code}: {_short_detail(resp)}")
-                return resp.json()
-            last_exc = ActionError(
-                path, f"{resp.status_code} (transient gateway error) on attempt {attempt}"
-            )
-
-        if attempt < _MAX_ATTEMPTS:
-            await asyncio.sleep(_RETRY_BACKOFF_SECONDS * attempt)
-
-    assert last_exc is not None  # the loop always sets it before falling through
-    raise last_exc
+    """Retry a replay-safe GET only for bounded cloud-edge/transport failure modes."""
+    return await _action_request(client, "GET", path, retry_safe=True, **kwargs)
 
 
 async def auth_failure(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
@@ -175,12 +177,7 @@ async def inject_telemetry(client: httpx.AsyncClient, target: str, parameters: d
 
 
 async def access_record(client: httpx.AsyncClient, target: str, parameters: dict) -> dict:
-    """The one action with bounded retry: a public cloud deployment's edge can return a
-    transient 502/503/504 on a cold start. `run_id`/`step_id` (injected by the runner, see
-    apps/demo_control/runner.py) let MissionNet's own endpoint treat a retried call as the exact
-    same logical action - it reuses the same audit_id instead of creating a second
-    record.access AuditEvent - so retrying here is safe even though the endpoint has a genuine
-    side effect (see docs/demo-runbook.md and DECISIONS.md)."""
+    """Record access is replay-safe because run_id/step_id make MissionNet audit creation idempotent."""
     actor_user_id = parameters["actor_user_id"]
     params = {"actor_user_id": actor_user_id}
     if parameters.get("scenario_id"):
@@ -204,10 +201,6 @@ async def snapshot_evidence(client: httpx.AsyncClient, target: str, parameters: 
 async def run_network_sensor_lab_action(
     client: httpx.AsyncClient, target: str, parameters: dict
 ) -> dict:
-    """The one non-MissionNet action: generates safe synthetic lab traffic between ephemeral
-    Docker containers and runs real Suricata/Zeek against it (services/sensor_lab/pipeline.py).
-    `client`/`target` are unused - this step needs neither MissionNet nor a per-step target - kept
-    only so this function still satisfies `ActionFn`'s shared signature."""
     try:
         result = await run_network_sensor_lab()
     except SensorLabError as exc:
