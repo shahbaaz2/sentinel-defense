@@ -9,6 +9,7 @@ const DEMO_CONTROL_URL =
 const SECTIONS = [
   { href: "/", label: "Security Posture", icon: "▦" },
   { href: "/incidents", label: "Investigations", icon: "◎" },
+  { href: "/ai-advisory", label: "AI Advisory", icon: "✦" },
   { href: "/events", label: "Event Explorer", icon: "≋" },
   { href: "/assets", label: "Asset Intelligence", icon: "◇" },
   { href: "/detection-coverage", label: "Detection Coverage", icon: "⌁" },
@@ -88,10 +89,10 @@ export function Nav() {
               <p className="text-[9px] uppercase text-slate-600">Detection</p>
               <p className="mt-1 text-[10px] font-semibold text-emerald-300">Deterministic</p>
             </div>
-            <div className="rounded border border-slate-800 bg-[#0b1723] p-2">
+            <Link href="/ai-advisory" className="rounded border border-amber-500/20 bg-amber-500/5 p-2 transition hover:border-amber-400/40">
               <p className="text-[9px] uppercase text-slate-600">AI</p>
-              <p className="mt-1 text-[10px] font-semibold text-amber-300">Advisory only</p>
-            </div>
+              <p className="mt-1 text-[10px] font-semibold text-amber-300">Open advisory</p>
+            </Link>
           </div>
           <p className="mt-3 text-[9px] leading-4 text-slate-600">Synthetic defensive environment · human authority retained for response actions.</p>
         </div>
@@ -99,7 +100,10 @@ export function Nav() {
 
       <div className="sticky top-0 z-40 flex items-center justify-between border-b border-slate-800 bg-[#08131e]/95 px-4 py-3 backdrop-blur lg:hidden">
         <Link href="/" className="text-xs font-bold uppercase tracking-[0.2em] text-sky-400">Sentinel</Link>
-        <a href={`${DEMO_CONTROL_URL.replace(/\/$/, "")}/live-demo#SCN-010`} target="_blank" rel="noreferrer" className="rounded border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[10px] font-semibold text-sky-200">Scenario Console ↗</a>
+        <div className="flex items-center gap-2">
+          <Link href="/ai-advisory" className="rounded border border-amber-500/25 bg-amber-500/5 px-3 py-1.5 text-[10px] font-semibold text-amber-200">AI Advisory</Link>
+          <a href={`${DEMO_CONTROL_URL.replace(/\/$/, "")}/live-demo#SCN-010`} target="_blank" rel="noreferrer" className="rounded border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[10px] font-semibold text-sky-200">Scenario ↗</a>
+        </div>
       </div>
     </>
   );
