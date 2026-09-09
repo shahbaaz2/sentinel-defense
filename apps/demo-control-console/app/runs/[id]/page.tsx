@@ -5,11 +5,16 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
   const { id } = await props.params;
 
   return (
-    <div className="flex flex-1 flex-col items-center bg-black font-mono text-zinc-100">
-      <main className="flex w-full max-w-4xl flex-col gap-6 px-8 py-16">
-        <Link href="/" className="text-xs text-zinc-500 hover:text-cyan-400">
-          ← Demo Control
-        </Link>
+    <div className="min-h-screen bg-[#f5f7fa] text-zinc-900">
+      <div className="border-b border-zinc-200 bg-white px-5 py-3 text-xs text-zinc-500 lg:px-8">
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4">
+          <Link href="/" className="font-medium text-zinc-700 hover:text-blue-700">
+            ← Demo Control
+          </Link>
+          <span>Scenario Run Operations</span>
+        </div>
+      </div>
+      <main className="mx-auto w-full max-w-[1500px] px-5 py-6 lg:px-8">
         <RunView runId={id} />
       </main>
     </div>
