@@ -1,7 +1,9 @@
-"""AI Analyst API (blueprint AI Analyst §11-12). Narrow by design: there is no endpoint that takes
-an arbitrary prompt - every request analyzes one existing Sentinel incident using the controlled
-Sentinel prompt and evidence pack. Nothing here can create a detection or incident, and nothing
-here writes to any table except `ai_assessments` and `audit_log` (via services.ai_analyst.service).
+"""AI Analyst API.
+
+The AI surface is intentionally narrow: requests analyze one existing Sentinel incident using the
+controlled evidence pack. AI cannot create detections/incidents or execute response actions.
+Provider diagnostics are exposed separately so operators can distinguish external API billing,
+authentication, rate limiting, and availability failures from Sentinel's deterministic pipeline.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -57,6 +59,41 @@ async def ai_status(
         external_ai_api="DISABLED" if not settings.external_ai_enabled else "ENABLED",
         last_latency_ms=last_latency,
     )
+
+
+@router.get("/ai/provider-diagnostics")
+async def ai_provider_diagnostics(provider: LLMProvider = Depends(get_llm_provider)) -> dict:
+    """Operational provider state safe for an analyst-facing status panel.
+
+    No secret, raw upstream response, token, account identifier, or balance amount is returned.
+    The purpose is classification: an operator should know whether advisory AI is unavailable due
+    to provider billing/auth/rate-limit/network health rather than misdiagnosing Sentinel itself.
+    """
+    if not settings.ai_enabled:
+        return {
+            "status": "DISABLED",
+            "code": "AI_DISABLED",
+            "message": "AI Analyst is disabled on this deployment.",
+            "provider": settings.llm_provider,
+            "model": settings.llm_model,
+            "sentinel_core_affected": False,
+        }
+
+    status = await provider.get_status()
+    code = getattr(provider, "last_error_code", None)
+    message = getattr(provider, "last_error_message", None)
+    if status == ProviderStatus.READY:
+        code = None
+        message = "AI provider is available for advisory analysis."
+
+    return {
+        "status": status.value,
+        "code": code,
+        "message": message,
+        "provider": provider.get_provenance().model_provider,
+        "model": provider.get_provenance().model_name,
+        "sentinel_core_affected": False,
+    }
 
 
 @router.post("/incidents/{incident_id}/ai/analyze", response_model=AIAssessmentOut)
