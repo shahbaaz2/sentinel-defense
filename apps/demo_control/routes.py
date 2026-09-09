@@ -27,6 +27,9 @@ async def system_status():
     missionnet_status = "UNREACHABLE"
     sentinel_status = "OFFLINE"
     ai_analyst_status = "UNKNOWN"
+    ai_analyst_code: str | None = None
+    ai_analyst_message: str | None = None
+    ai_core_affected = False
 
     async with httpx.AsyncClient(timeout=8.0) as client:
         try:
@@ -62,17 +65,25 @@ async def system_status():
                     "GET",
                     f"{settings.sentinel_base_url}/api/v1/ai/provider-diagnostics",
                     component="Sentinel AI Advisory",
-                    retry_safe=True,
+                    retry_safe=False,
                     expected_type=dict,
                 )
                 ai_analyst_status = str(ai.get("status", "UNKNOWN")).upper()
-            except UpstreamResponseError:
+                ai_analyst_code = ai.get("code")
+                ai_analyst_message = ai.get("message")
+                ai_core_affected = bool(ai.get("sentinel_core_affected", False))
+            except UpstreamResponseError as exc:
                 ai_analyst_status = "UNAVAILABLE"
-
+                ai_analyst_code = exc.code
+                ai_analyst_message = "AI provider diagnostics could not be retrieved. Sentinel Core remains independently available."
+                ai_core_affected = False
     return SystemStatusOut(
         missionnet_status=missionnet_status,
         sentinel_status=sentinel_status,
         ai_analyst_status=ai_analyst_status,
+        ai_analyst_code=ai_analyst_code,
+        ai_analyst_message=ai_analyst_message,
+        ai_core_affected=ai_core_affected,
     )
 
 
