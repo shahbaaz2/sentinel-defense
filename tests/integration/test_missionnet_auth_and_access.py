@@ -74,6 +74,57 @@ async def test_record_access_requires_actor_and_writes_audit_event():
     assert audit[0]["object_id"] == "rec-000"
 
 
+async def test_record_access_without_run_id_creates_a_fresh_event_every_call():
+    """Callers outside the scenario runner (no run_id/step_id) keep the pre-existing behavior -
+    no idempotency key to dedupe on, so every call is its own genuine access."""
+    async with await _client() as client:
+        params = {"actor_user_id": "u-analyst-01"}
+        await client.get("/mission-data/records/rec-000", params=params)
+        await client.get("/mission-data/records/rec-000", params=params)
+        audit = (await client.get("/audit")).json()
+    record_accesses = [a for a in audit if a["action"] == "record.access"]
+    assert len(record_accesses) == 2
+
+
+async def test_record_access_retry_with_same_run_and_step_id_is_idempotent():
+    """The exact scenario this exists for: Demo Control retries the same scenario step after a
+    transient gateway error - MissionNet must not record a second record.access AuditEvent for
+    what is really one logical action (see apps/demo_control/actions.py::access_record and
+    DECISIONS.md)."""
+    async with await _client() as client:
+        params = {
+            "actor_user_id": "svc-mission-data-01",
+            "run_id": "RUN-test-123",
+            "step_id": "step-3",
+        }
+        first = await client.get("/mission-data/records/rec-000", params=params)
+        second = await client.get("/mission-data/records/rec-000", params=params)
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json() == second.json()
+
+        audit = (await client.get("/audit")).json()
+    record_accesses = [a for a in audit if a["action"] == "record.access"]
+    assert len(record_accesses) == 1  # not 2 - the retry was a genuine no-op
+
+
+async def test_record_access_different_step_id_is_a_genuinely_new_event():
+    """Idempotency must be scoped to (run_id, step_id) - a different step in the same run (or a
+    different run) accessing the same record is a real, distinct access, not a duplicate."""
+    async with await _client() as client:
+        await client.get(
+            "/mission-data/records/rec-000",
+            params={"actor_user_id": "u-analyst-01", "run_id": "RUN-a", "step_id": "step-3"},
+        )
+        await client.get(
+            "/mission-data/records/rec-000",
+            params={"actor_user_id": "u-analyst-01", "run_id": "RUN-a", "step_id": "step-7"},
+        )
+        audit = (await client.get("/audit")).json()
+    record_accesses = [a for a in audit if a["action"] == "record.access"]
+    assert len(record_accesses) == 2
+
+
 async def test_audit_since_filters_and_orders_ascending():
     async with await _client() as client:
         baseline_audit = (await client.get("/audit")).json()

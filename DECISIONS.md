@@ -4,6 +4,47 @@ ADR-style log of durable engineering decisions. Newest first. Each entry: date, 
 
 ---
 
+## 2026-09-08 — SCN-010's `access_record` step gets bounded retry; MissionNet dedupes by (run_id, step_id)
+
+A public Render deployment's edge occasionally returns a transient 502/503/504 on a cold start or
+brief restart - real, observed on the cloud-deployed immersive SCN-010 GUI at step-3
+(`access_record` against `/mission-data/records/{id}`). The fix has two parts that only work
+together safely:
+
+1. **Retry is narrowly scoped and bounded** (`apps/demo_control/actions.py::
+   _get_with_bounded_retry`): only `{502, 503, 504}` and transport-level failures
+   (`httpx.TransportError`/`TimeoutException`) are retried, up to 3 total attempts with a short
+   linear backoff (0.5s, 1.0s). A 4xx or any other application error raises on the first attempt,
+   exactly like every other action's `_get`/`_post` - a real error is never retried into a
+   fabricated success. Only `access_record` uses this wrapper; every other action keeps calling
+   the plain `_get`/`_post` unchanged, since it's the one `_get`-based action in the whole registry
+   and the one with a real side effect worth protecting.
+2. **The endpoint itself is made idempotent, not just the caller optimistic**
+   (`apps/missionnet/routes.py::get_record`): the runner now injects `run_id`/`step_id` into every
+   action's `parameters` (`apps/demo_control/runner.py`), and `access_record` forwards them as
+   query params. When both are present, MissionNet computes a deterministic `audit_id =
+   uuid5(NAMESPACE_URL, f"record.access:{run_id}:{step_id}:{record_id}")` and inserts the
+   `AuditEvent` with `ON CONFLICT (audit_id) DO NOTHING` - a retried call for the exact same
+   scenario step reuses the same ID and becomes a genuine no-op, not a second audit row. A caller
+   with no `run_id`/`step_id` (anything outside the scenario runner) keeps the original
+   `uuid4()`-every-call behavior - there's no step identity to key idempotency on, and no existing
+   caller's behavior changes. Retrying at the action layer without this would have silently
+   doubled `record.access` evidence on every gateway hiccup - the two changes are not separable.
+
+Also fixed as part of this: `_get`/`_post` (and the new retry wrapper) now truncate a failed
+response's body to 300 characters before it becomes an `ActionError` message
+(`apps/demo_control/actions.py::_short_detail`) - a proxy's HTML 502 page can be several KB, and
+that string becomes `ScenarioRun.failure_reason`, which both the plain Demo Control console and
+the newer immersive SCN-010 GUI (`apps/demo-control-console/app/live-demo/`) can render directly.
+The GUI adds its own second truncation and a curated "cloud service interruption" message as
+defense in depth, but the real fix is at the source so every consumer of `failure_reason` benefits,
+not just this one page.
+
+No scenario YAML changed - `cyber-range/scenarios/SCN-010.yaml`'s `step-3` is untouched;
+`run_id`/`step_id` are runner-injected provenance, not scenario-declared parameters.
+
+---
+
 ## 2026-09-07 — Optional cloud deployment: DeepSeek as a third, explicitly allowlisted `LLMProvider`
 
 The user asked to deploy the dashboards to Vercel and the APIs to Render for a portfolio-style

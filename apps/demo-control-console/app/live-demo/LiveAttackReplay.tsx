@@ -10,6 +10,22 @@ const SENTINEL_DASHBOARD =
 const POLL_MS = 1200;
 const REPLAY_MS = 2400;
 const TERMINAL = new Set(["PASSED", "FAILED", "CANCELLED"]);
+const FAILURE_REASON_DISPLAY_LIMIT = 300;
+
+/** The backend already truncates a proxy's raw HTML error page before it ever reaches
+ * `failure_reason` (see apps/demo_control/actions.py::_short_detail) - this is defense in depth
+ * so the employer-facing GUI never renders a huge blob even if that ever regresses. */
+function shortFailureReason(reason: string | null): string | null {
+  if (!reason) return null;
+  return reason.length > FAILURE_REASON_DISPLAY_LIMIT
+    ? reason.slice(0, FAILURE_REASON_DISPLAY_LIMIT) + "…"
+    : reason;
+}
+
+function isTransientGatewayFailure(reason: string | null): boolean {
+  if (!reason) return false;
+  return /\b(502|503|504)\b/.test(reason) || /transient gateway error/i.test(reason);
+}
 
 type TimelineEntry = { timestamp: string; message: string };
 type RunDetail = {
@@ -282,6 +298,26 @@ export function LiveAttackReplay() {
         {error && (
           <div className="rounded-lg border border-red-900 bg-red-950/30 px-4 py-3 text-xs text-red-300">
             {error}
+          </div>
+        )}
+
+        {run?.status === "FAILED" && (
+          <div className="rounded-lg border border-amber-900 bg-amber-950/20 px-4 py-3 text-xs text-amber-200">
+            <p className="font-semibold uppercase tracking-wide">
+              {isTransientGatewayFailure(run.failure_reason)
+                ? "Cloud service interruption"
+                : "Scenario run failed"}
+            </p>
+            <p className="mt-1 text-amber-200/80">
+              {isTransientGatewayFailure(run.failure_reason)
+                ? "MissionNet returned a temporary gateway error during this step. Sentinel has not fabricated or advanced the scenario - restart the demo to retry."
+                : "The scenario stopped before completing. Sentinel has not fabricated or advanced past this point."}
+            </p>
+            {shortFailureReason(run.failure_reason) && (
+              <p className="mt-2 break-words font-mono text-[10px] text-amber-200/50">
+                {shortFailureReason(run.failure_reason)}
+              </p>
+            )}
           </div>
         )}
 

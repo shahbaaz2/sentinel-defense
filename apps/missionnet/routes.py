@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.missionnet.db import get_session
@@ -104,25 +105,43 @@ async def get_record(
     record_id: str,
     actor_user_id: str = Query(..., description="Identity performing the access, for audit."),
     scenario_id: str | None = Query(default=None),
+    run_id: str | None = Query(
+        default=None, description="Demo Control run ID - enables idempotent retry (with step_id)."
+    ),
+    step_id: str | None = Query(
+        default=None, description="Demo Control step ID - enables idempotent retry (with run_id)."
+    ),
     session: AsyncSession = Depends(get_session),
 ):
     record = await session.get(MissionRecord, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="mission record not found")
 
-    session.add(
-        AuditEvent(
-            audit_id=str(uuid.uuid4()),
-            actor_type="human",
-            actor_id=actor_user_id,
-            action="record.access",
-            object_type="mission_record",
-            object_id=record_id,
-            detail={},
-            severity="info",
-            scenario_id=scenario_id,
-        )
+    if run_id and step_id:
+        # Deterministic ID from (run_id, step_id, record_id): a caller retrying the exact same
+        # scenario step (e.g. after a transient 502) reuses the same audit_id, so the
+        # on_conflict_do_nothing below makes a retried record.access a genuine no-op instead of a
+        # second AuditEvent - see docs/demo-runbook.md and DECISIONS.md. Callers that don't pass
+        # run_id/step_id (anything outside the scenario runner) keep today's behavior: a fresh
+        # random ID every call, since there's no step identity to key idempotency on.
+        idempotency_name = f"record.access:{run_id}:{step_id}:{record_id}"
+        audit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_name))
+    else:
+        audit_id = str(uuid.uuid4())
+
+    stmt = pg_insert(AuditEvent).values(
+        audit_id=audit_id,
+        actor_type="human",
+        actor_id=actor_user_id,
+        action="record.access",
+        object_type="mission_record",
+        object_id=record_id,
+        detail={},
+        severity="info",
+        scenario_id=scenario_id,
     )
+    stmt = stmt.on_conflict_do_nothing(index_elements=["audit_id"])
+    await session.execute(stmt)
     await session.commit()
     return record
 
