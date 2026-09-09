@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
 
@@ -43,14 +43,38 @@ type AIStatus = {
   last_latency_ms: number | null;
 };
 
+type ProviderDiagnostics = {
+  status: "READY" | "LOADING" | "DEGRADED" | "DISABLED";
+  code: string | null;
+  message: string | null;
+  provider: string;
+  model: string;
+  sentinel_core_affected: boolean;
+};
+
 function StatusBadge({ status }: { status: string }) {
   const color =
     status === "READY" || status === "VALID"
-      ? "text-emerald-600 dark:text-emerald-400"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300"
       : status === "DISABLED" || status === "LOADING"
-        ? "text-zinc-500"
-        : "text-red-600 dark:text-red-400";
-  return <span className={`font-mono text-xs ${color}`}>{status}</span>;
+        ? "border-zinc-200 bg-zinc-50 text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+        : "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300";
+  return <span className={`rounded border px-2 py-1 font-mono text-[10px] font-semibold ${color}`}>{status}</span>;
+}
+
+function errorCode(error: string | null): string | null {
+  return error?.match(/^\[([A-Z0-9_]+)\]/)?.[1] ?? null;
+}
+
+function diagnosticTitle(code: string | null): string {
+  if (code === "AI_PROVIDER_BILLING") return "AI provider balance unavailable";
+  if (code === "AI_PROVIDER_AUTH") return "AI provider authentication failed";
+  if (code === "AI_PROVIDER_RATE_LIMIT") return "AI provider rate limit reached";
+  if (code === "AI_PROVIDER_UPSTREAM" || code === "AI_PROVIDER_NETWORK") return "AI provider temporarily unavailable";
+  if (code === "AI_PROVIDER_TIMEOUT") return "AI provider request timed out";
+  if (code === "AI_PROVIDER_INVALID_OUTPUT" || code === "AI_PROVIDER_INVALID_RESPONSE") return "AI provider response rejected";
+  if (code === "AI_PROVIDER_CONFIG" || code === "AI_DISABLED") return "AI advisory not configured";
+  return "AI advisory unavailable";
 }
 
 export function AIAnalystPanel({
@@ -63,197 +87,239 @@ export function AIAnalystPanel({
   initialAssessmentCount: number;
 }) {
   const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ProviderDiagnostics | null>(null);
   const [assessment, setAssessment] = useState<Assessment | null>(initialAssessment);
   const [assessmentCount, setAssessmentCount] = useState(initialAssessmentCount);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  const refreshProviderState = useCallback(async () => {
+    try {
+      const [statusRes, diagnosticsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/ai/status`, { cache: "no-store" }),
+        fetch(`${API_BASE}/api/v1/ai/provider-diagnostics`, { cache: "no-store" }),
+      ]);
+      setAiStatus(statusRes.ok ? ((await statusRes.json()) as AIStatus) : null);
+      setDiagnostics(
+        diagnosticsRes.ok ? ((await diagnosticsRes.json()) as ProviderDiagnostics) : null,
+      );
+    } catch {
+      setAiStatus(null);
+      setDiagnostics(null);
+    }
+  }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/v1/ai/status`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then(setAiStatus)
-      .catch(() => setAiStatus(null));
-  }, []);
+    void refreshProviderState();
+  }, [refreshProviderState]);
 
   async function handleAnalyze() {
     setBusy(true);
-    setError(null);
+    setRequestError(null);
     try {
       const res = await fetch(`${API_BASE}/api/v1/incidents/${incidentId}/ai/analyze`, {
         method: "POST",
       });
       if (res.status === 503) {
-        setError("AI Analyst is not enabled on this deployment.");
+        setRequestError("AI Analyst is disabled on this deployment. Sentinel incident data is unaffected.");
+        await refreshProviderState();
         return;
       }
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const result = (await res.json()) as Assessment;
       setAssessment(result);
-      setAssessmentCount((c) => c + 1);
-    } catch {
-      setError("Analysis request failed - the deterministic incident data above is unaffected.");
+      setAssessmentCount((count) => count + 1);
+      await refreshProviderState();
+    } catch (err) {
+      setRequestError(
+        `Unable to submit the advisory analysis request${err instanceof Error ? ` (${err.message})` : ""}. The deterministic incident and evidence remain available.`,
+      );
     } finally {
       setBusy(false);
     }
   }
 
+  const latestErrorCode = errorCode(assessment?.error ?? null) ?? diagnostics?.code ?? null;
+  const providerProblem =
+    diagnostics && diagnostics.status !== "READY"
+      ? diagnostics
+      : assessment && assessment.validation_status !== "VALID"
+        ? {
+            status: "DEGRADED" as const,
+            code: latestErrorCode,
+            message: assessment.error,
+            provider: assessment.model_provider,
+            model: assessment.model_name,
+            sentinel_core_affected: false,
+          }
+        : null;
+
   return (
-    <section className="rounded-lg border-2 border-indigo-300 bg-indigo-50/40 p-4 dark:border-indigo-800 dark:bg-indigo-950/20">
-      <div className="mb-1 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
-          AI Assessment — Model Interpretation
-        </h2>
+    <section className="rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="flex flex-col justify-between gap-3 border-b border-zinc-200 px-5 py-4 sm:flex-row sm:items-start dark:border-zinc-800">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-950 dark:text-zinc-100">AI Analyst</h2>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-zinc-500">
+            Evidence-grounded advisory analysis for this existing incident. AI cannot create detections,
+            create incidents, approve response actions, or modify MissionNet state.
+          </p>
+        </div>
         {aiStatus && <StatusBadge status={aiStatus.status} />}
       </div>
-      <p className="mb-3 text-xs text-indigo-700/70 dark:text-indigo-300/70">
-        Generated by the configured AI Analyst using the incident evidence above. Advisory only — it
-        cannot alter detections, incidents, or MissionNet state. Treat it as a second opinion, not a
-        fact.
-      </p>
 
-      {aiStatus && !aiStatus.ai_enabled && (
-        <p className="text-sm text-zinc-500">
-          NOT ENABLED — set SENTINEL_AI_ENABLED=true and configure a supported LLM provider (see
-          RUNBOOK.md).
-        </p>
-      )}
+      <div className="p-5">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Provider</p>
+            <p className="mt-1 font-mono text-xs text-zinc-800 dark:text-zinc-300">{aiStatus?.provider ?? diagnostics?.provider ?? "Unavailable"}</p>
+          </div>
+          <div className="rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Model</p>
+            <p className="mt-1 font-mono text-xs text-zinc-800 dark:text-zinc-300">{aiStatus?.model ?? diagnostics?.model ?? "Unavailable"}</p>
+          </div>
+          <div className="rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Last latency</p>
+            <p className="mt-1 font-mono text-xs text-zinc-800 dark:text-zinc-300">{aiStatus?.last_latency_ms != null ? `${aiStatus.last_latency_ms} ms` : "No completed sample"}</p>
+          </div>
+        </div>
 
-      {aiStatus && aiStatus.ai_enabled && (
-        <div className="mb-3 flex items-center gap-3">
+        {providerProblem && (
+          <div className="mt-4 rounded border border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 px-4 py-3 dark:border-amber-900">
+              <div>
+                <p className="text-xs font-semibold text-amber-950 dark:text-amber-200">{diagnosticTitle(providerProblem.code)}</p>
+                <p className="mt-1 text-[11px] text-amber-800/80 dark:text-amber-300/70">External AI advisory dependency</p>
+              </div>
+              {providerProblem.code && <span className="rounded border border-amber-300 bg-white px-2 py-1 font-mono text-[10px] text-amber-800 dark:border-amber-800 dark:bg-zinc-950 dark:text-amber-300">{providerProblem.code}</span>}
+            </div>
+            <div className="px-4 py-3 text-xs leading-5 text-amber-900 dark:text-amber-200">
+              <p>{providerProblem.message ?? "The configured AI provider is currently unavailable."}</p>
+              {!providerProblem.sentinel_core_affected && (
+                <p className="mt-2 font-semibold">Sentinel Core status: unaffected. Deterministic detections, incidents, evidence, and response controls remain available.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {requestError && (
+          <div className="mt-4 rounded border border-red-200 bg-red-50 px-4 py-3 text-xs leading-5 text-red-800 dark:border-red-900 dark:bg-red-950/20 dark:text-red-300">
+            {requestError}
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             onClick={handleAnalyze}
-            disabled={busy}
-            className="rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-indigo-500"
+            disabled={busy || !aiStatus?.ai_enabled}
+            className="rounded-md bg-indigo-700 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-800"
           >
-            {busy ? "Analyzing…" : "ANALYZE WITH AI"}
+            {busy ? "Running advisory analysis…" : "Analyze with AI"}
           </button>
-          <span className="font-mono text-[10px] text-zinc-500">
-            {aiStatus.provider} · {aiStatus.model}
-          </span>
           {assessmentCount > 0 && (
-            <span className="text-[10px] text-zinc-500">
-              {assessmentCount} assessment{assessmentCount === 1 ? "" : "s"} on record
+            <span className="text-xs text-zinc-500">
+              {assessmentCount} assessment{assessmentCount === 1 ? "" : "s"} recorded
             </span>
           )}
         </div>
-      )}
 
-      {error && <p className="mb-2 text-xs text-red-600 dark:text-red-400">{error}</p>}
+        {assessment && (
+          <div className="mt-5 rounded border border-zinc-200 dark:border-zinc-800">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-[10px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <span>{new Date(assessment.created_at).toLocaleString()}</span>
+              <span className="font-mono">{assessment.model_name}</span>
+              <span className="font-mono">prompt {assessment.prompt_version}</span>
+              {assessment.latency_ms !== null && <span>{assessment.latency_ms} ms</span>}
+              <StatusBadge status={assessment.validation_status} />
+            </div>
 
-      {assessment && (
-        <div className="rounded border border-indigo-200 bg-white p-3 text-sm dark:border-indigo-900 dark:bg-black">
-          <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-zinc-500">
-            <span>{new Date(assessment.created_at).toLocaleString()}</span>
-            <span className="font-mono">{assessment.model_name}</span>
-            <span className="font-mono">prompt {assessment.prompt_version}</span>
-            {assessment.latency_ms !== null && <span>{assessment.latency_ms} ms</span>}
-            <StatusBadge status={assessment.validation_status} />
-          </div>
-
-          {assessment.validation_status !== "VALID" && (
-            <p className="text-xs text-red-600 dark:text-red-400">
-              This analysis attempt was rejected and is not shown as evidence:{" "}
-              {assessment.error ?? assessment.validation_status}
-            </p>
-          )}
-
-          {assessment.assessment && (
-            <>
-              <div className="mb-2 flex items-center gap-3">
-                <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs font-semibold uppercase text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200">
-                  {assessment.assessment.classification}
-                </span>
-                <span className="text-xs text-zinc-500">
-                  confidence {(assessment.assessment.confidence * 100).toFixed(0)}%
-                </span>
-              </div>
-              <p className="mb-3">{assessment.assessment.summary}</p>
-
-              {assessment.assessment.hypotheses.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-xs font-semibold uppercase text-zinc-500">Hypotheses</p>
-                  <ul className="list-inside list-disc text-xs">
-                    {assessment.assessment.hypotheses.map((h, i) => (
-                      <li key={i}>{h}</li>
-                    ))}
-                  </ul>
+            <div className="p-4 text-sm">
+              {assessment.validation_status !== "VALID" && (
+                <div className="rounded border border-red-200 bg-red-50 px-3 py-3 text-xs leading-5 text-red-800 dark:border-red-900 dark:bg-red-950/20 dark:text-red-300">
+                  <p className="font-semibold">This advisory attempt was not accepted as a valid assessment.</p>
+                  <p className="mt-1">{assessment.error ?? assessment.validation_status}</p>
+                  <p className="mt-2 text-red-700/80 dark:text-red-300/70">The incident's deterministic evidence and security state were not changed by this failure.</p>
                 </div>
               )}
 
-              {assessment.assessment.recommended_investigation_steps.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-xs font-semibold uppercase text-zinc-500">
-                    Recommended Investigation Steps
+              {assessment.assessment && (
+                <>
+                  <div className="mb-3 flex flex-wrap items-center gap-3">
+                    <span className="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-semibold uppercase text-indigo-800 dark:border-indigo-900 dark:bg-indigo-950/30 dark:text-indigo-200">
+                      {assessment.assessment.classification}
+                    </span>
+                    <span className="text-xs text-zinc-500">confidence {(assessment.assessment.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                  <p className="mb-4 leading-6 text-zinc-800 dark:text-zinc-200">{assessment.assessment.summary}</p>
+
+                  {assessment.assessment.hypotheses.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Hypotheses</p>
+                      <ul className="mt-2 list-inside list-disc space-y-1 text-xs leading-5 text-zinc-700 dark:text-zinc-300">
+                        {assessment.assessment.hypotheses.map((hypothesis, index) => <li key={index}>{hypothesis}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
+                  {assessment.assessment.recommended_investigation_steps.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Recommended investigation steps</p>
+                      <ol className="mt-2 list-inside list-decimal space-y-1 text-xs leading-5 text-zinc-700 dark:text-zinc-300">
+                        {assessment.assessment.recommended_investigation_steps.map((step, index) => <li key={index}>{step}</li>)}
+                      </ol>
+                    </div>
+                  )}
+
+                  {assessment.assessment.evidence_refs.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cited evidence</p>
+                      <div className="mt-2 overflow-hidden rounded border border-zinc-200 dark:border-zinc-800">
+                        {assessment.assessment.evidence_refs.map((reference) => (
+                          <div key={reference.event_id} className="border-b border-zinc-100 px-3 py-2 text-xs last:border-0 dark:border-zinc-800">
+                            <Link href={`/events/${reference.event_id}`} className="font-mono text-blue-700 hover:underline dark:text-blue-400">{reference.event_id}</Link>
+                            <span className="text-zinc-500"> — {reference.relevance}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {assessment.assessment.detection_refs.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cited detections</p>
+                      <ul className="mt-2 space-y-1 text-xs text-zinc-700 dark:text-zinc-300">
+                        {assessment.assessment.detection_refs.map((reference) => (
+                          <li key={reference.detection_id}><span className="font-mono">{reference.detection_id}</span> — {reference.relevance}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {assessment.assessment.attack_techniques.length > 0 && (
+                    <p className="mb-3 font-mono text-xs text-zinc-500">ATT&amp;CK candidates: {assessment.assessment.attack_techniques.join(", ")}</p>
+                  )}
+
+                  <p className="mb-3 text-xs text-zinc-500">
+                    Recommended playbook: {assessment.assessment.recommended_playbook_id ?? "none"}
                   </p>
-                  <ul className="list-inside list-disc text-xs">
-                    {assessment.assessment.recommended_investigation_steps.map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ul>
-                </div>
+
+                  {assessment.assessment.limitations.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Limitations</p>
+                      <ul className="mt-2 list-inside list-disc space-y-1 text-xs text-zinc-500">
+                        {assessment.assessment.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </>
               )}
+            </div>
+          </div>
+        )}
 
-              {assessment.assessment.evidence_refs.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-xs font-semibold uppercase text-zinc-500">Cited Evidence</p>
-                  <ul className="text-xs">
-                    {assessment.assessment.evidence_refs.map((r) => (
-                      <li key={r.event_id}>
-                        <Link
-                          href={`/events/${r.event_id}`}
-                          className="font-mono text-blue-600 hover:underline dark:text-blue-400"
-                        >
-                          {r.event_id}
-                        </Link>{" "}
-                        — {r.relevance}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {assessment.assessment.detection_refs.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-xs font-semibold uppercase text-zinc-500">Cited Detections</p>
-                  <ul className="text-xs">
-                    {assessment.assessment.detection_refs.map((r) => (
-                      <li key={r.detection_id}>
-                        <span className="font-mono">{r.detection_id}</span> — {r.relevance}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {assessment.assessment.attack_techniques.length > 0 && (
-                <p className="mb-2 font-mono text-xs text-zinc-500">
-                  ATT&amp;CK candidates: {assessment.assessment.attack_techniques.join(", ")}
-                </p>
-              )}
-
-              <p className="mb-2 text-xs text-zinc-500">
-                Recommended playbook:{" "}
-                {assessment.assessment.recommended_playbook_id ?? "none (no playbook catalog yet)"}
-              </p>
-
-              {assessment.assessment.limitations.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold uppercase text-zinc-500">Limitations</p>
-                  <ul className="list-inside list-disc text-xs text-zinc-500">
-                    {assessment.assessment.limitations.map((l, i) => (
-                      <li key={i}>{l}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
-
-      {!assessment && aiStatus?.ai_enabled && (
-        <p className="text-xs text-zinc-500">No analysis has been run for this incident yet.</p>
-      )}
+        {!assessment && aiStatus?.ai_enabled && !providerProblem && (
+          <p className="mt-4 text-xs text-zinc-500">No advisory analysis has been run for this incident.</p>
+        )}
+      </div>
     </section>
   );
 }
