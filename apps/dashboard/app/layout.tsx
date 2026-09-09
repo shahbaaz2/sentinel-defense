@@ -15,20 +15,19 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Sentinel — Cyber Defense Command",
-  description: "Synthetic lab prototype — defensive only.",
+  title: "Sentinel Enterprise Security",
+  description: "Employer-facing security operations console for Sentinel's synthetic defensive lab.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+      <body className="min-h-full bg-[#071019] text-slate-100">
         <LiveDataProvider>
           <Nav />
-          {children}
+          <div className="min-h-screen lg:pl-[246px]">
+            <div className="soc-grid min-h-screen">{children}</div>
+          </div>
         </LiveDataProvider>
       </body>
     </html>
