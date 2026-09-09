@@ -41,4 +41,7 @@ class RunScenarioRequest(BaseModel):
 class SystemStatusOut(BaseModel):
     missionnet_status: str
     sentinel_status: str
-    ai_analyst_status: str = "NOT_ENABLED"
+    ai_analyst_status: str = "UNKNOWN"
+    ai_analyst_code: str | None = None
+    ai_analyst_message: str | None = None
+    ai_core_affected: bool = False
