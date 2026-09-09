@@ -4,6 +4,7 @@ import { OverviewLive } from "./OverviewLive";
 const API_BASE = process.env.SENTINEL_API_BASE_URL ?? "http://127.0.0.1:8080";
 const DEMO_CONTROL_URL =
   process.env.NEXT_PUBLIC_DEMO_CONTROL_URL ?? "https://sentinel-defense-ov8q.vercel.app";
+const LIVE_DEMO_URL = `${DEMO_CONTROL_URL.replace(/\/$/, "")}/live-demo`;
 
 type Assurance = {
   inference_location: string;
@@ -62,12 +63,12 @@ export default async function Home() {
 
           <div className="flex flex-wrap items-center gap-3">
             <a
-              href={DEMO_CONTROL_URL}
+              href={LIVE_DEMO_URL}
               target="_blank"
               rel="noreferrer"
               className="rounded-md bg-black px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
             >
-              LAUNCH LIVE DEMO ↗
+              LAUNCH IMMERSIVE LIVE DEMO ↗
             </a>
             <Link
               href="/incidents"
@@ -77,9 +78,9 @@ export default async function Home() {
             </Link>
           </div>
           <p className="max-w-2xl text-xs text-zinc-500">
-            Launch the Scenario Control console to run a guided synthetic attack simulation such as
-            SCN-010, then return here to inspect detections, correlated incidents, AI analysis, and
-            the human-authorized response workflow.
+            Launch the flagship SCN-010 GUI replay to watch synthetic credential pressure and mission-service
+            degradation produce real Sentinel detections, correlated incidents, evidence verification, and a
+            guided handoff into AI-assisted, human-approved response.
           </p>
         </div>
 
