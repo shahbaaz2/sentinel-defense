@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { EnterpriseSecurityConsole } from "./EnterpriseSecurityConsole";
 
+// Production deployment marker: enterprise security console enabled.
 export default function LiveDemoPage() {
   return (
     <>
