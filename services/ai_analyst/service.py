@@ -1,13 +1,8 @@
-"""AI Analyst orchestration (blueprint AI Analyst §5). This is the ONLY place that ties the
-evidence pack, the LLM provider, output validation, and persistence together - route handlers in
-`apps/api/ai_routes.py` call `run_analysis` and nothing else, so none of this logic is buried
-inside a FastAPI handler.
+"""AI Analyst orchestration.
 
-Failure isolation is the core contract: whatever goes wrong (provider unavailable, timeout,
-malformed JSON, hallucinated reference), `run_analysis` always returns a persisted `AIAssessment`
-row describing what happened - it never raises out to the caller, and it never touches any table
-other than `ai_assessments` and `audit_log`. Nothing here can create/modify a detection or an
-incident.
+Failure isolation is the core contract: provider unavailable, billing, authentication, timeout,
+malformed output, or hallucinated reference always becomes a persisted assessment outcome. AI
+failure never changes or invalidates Sentinel's deterministic incident/detection state.
 """
 
 import time
@@ -38,9 +33,6 @@ async def run_analysis(
     timeout_seconds: float,
     actor: str = "system",
 ) -> AIAssessment | None:
-    """Returns None only if `incident_id` does not exist (a real 404, not an AI failure).
-    Every other outcome - success, timeout, invalid output, hallucinated reference - is returned
-    as a persisted AIAssessment row so the caller always has something to show the analyst."""
     pack = await build_evidence_pack(session, incident_id)
     if pack is None:
         return None
@@ -71,8 +63,14 @@ async def run_analysis(
         error = str(exc)
         validation_status = "REJECTED_HALLUCINATION"
     except StructuredCompletionError as exc:
-        error = str(exc)
-        validation_status = "TIMEOUT" if "timeout" in str(exc).lower() else "PROVIDER_ERROR"
+        # Standardized prefix is intentionally persisted so the API/UI can present a useful
+        # operator diagnosis without a database migration and without exposing raw provider bodies.
+        error = f"[{exc.code}] {exc}"
+        validation_status = (
+            "TIMEOUT"
+            if exc.code == "AI_PROVIDER_TIMEOUT" or "timeout" in str(exc).lower()
+            else "PROVIDER_ERROR"
+        )
     latency_ms = int((time.monotonic() - start) * 1000)
 
     row = AIAssessment(
@@ -93,6 +91,15 @@ async def run_analysis(
     )
     session.add(row)
 
+    audit_detail = {
+        "assessment_id": assessment_id,
+        "validation_status": validation_status,
+        "latency_ms": latency_ms,
+        "model_name": provenance.model_name,
+    }
+    if error and error.startswith("["):
+        audit_detail["provider_error_code"] = error[1:].split("]", 1)[0]
+
     await write_audit(
         session,
         entity_type="incident",
@@ -100,12 +107,7 @@ async def run_analysis(
         action="incident.ai_analyzed",
         actor=actor,
         scenario_id=pack.scenario_id,
-        detail={
-            "assessment_id": assessment_id,
-            "validation_status": validation_status,
-            "latency_ms": latency_ms,
-            "model_name": provenance.model_name,
-        },
+        detail=audit_detail,
     )
     await session.commit()
     await session.refresh(row)
