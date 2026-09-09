@@ -83,32 +83,35 @@ export default async function Home() {
             <div>
               <p className="soc-kicker">Controlled validation library</p>
               <h2 className="mt-1 text-sm font-semibold text-white">Scenario Operations</h2>
-              <p className="mt-1 text-[11px] text-slate-500">Every repository scenario opens in the same enterprise security console and derives progress from persisted evidence.</p>
+              <p className="mt-1 text-[11px] text-slate-500">Every repository scenario opens in an enterprise security console and derives progress from persisted evidence.</p>
             </div>
             <span className="rounded border border-slate-700 bg-[#0d1b29] px-2.5 py-1 text-[10px] font-mono text-slate-400">6 controlled workflows</span>
           </div>
           <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-            {SCENARIOS.map((scenario) => (
-              <a
-                key={scenario.id}
-                href={`${LIVE_DEMO_URL}#${scenario.id}`}
-                target="_blank"
-                rel="noreferrer"
-                className="group rounded-lg border border-slate-800 bg-[#0d1b29] p-4 transition hover:-translate-y-0.5 hover:border-sky-500/40 hover:bg-[#102131]"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[10px] font-bold text-sky-300">{scenario.id}</span>
-                  <span className="text-[8px] uppercase tracking-wider text-slate-600">{scenario.type}</span>
-                </div>
-                <h3 className="mt-3 min-h-10 text-xs font-semibold leading-5 text-slate-200 group-hover:text-white">{scenario.title}</h3>
-                <div className="mt-3 border-t border-slate-800 pt-3">
-                  <p className="text-[8px] uppercase tracking-wider text-slate-600">Expected security result</p>
-                  <p className="mt-1 text-[9px] font-medium leading-4 text-slate-400">{scenario.expected}</p>
-                  <p className="mt-2 text-[8px] text-slate-600">{scenario.note}</p>
-                </div>
-                <p className="mt-3 text-[10px] font-semibold text-sky-400">Open controlled run ↗</p>
-              </a>
-            ))}
+            {SCENARIOS.map((scenario) => {
+              const scenarioHref = scenario.id === "SCN-NET-001" ? `${LIVE_DEMO_URL}/network` : `${LIVE_DEMO_URL}#${scenario.id}`;
+              return (
+                <a
+                  key={scenario.id}
+                  href={scenarioHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group rounded-lg border border-slate-800 bg-[#0d1b29] p-4 transition hover:-translate-y-0.5 hover:border-sky-500/40 hover:bg-[#102131]"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px] font-bold text-sky-300">{scenario.id}</span>
+                    <span className="text-[8px] uppercase tracking-wider text-slate-600">{scenario.type}</span>
+                  </div>
+                  <h3 className="mt-3 min-h-10 text-xs font-semibold leading-5 text-slate-200 group-hover:text-white">{scenario.title}</h3>
+                  <div className="mt-3 border-t border-slate-800 pt-3">
+                    <p className="text-[8px] uppercase tracking-wider text-slate-600">Expected security result</p>
+                    <p className="mt-1 text-[9px] font-medium leading-4 text-slate-400">{scenario.expected}</p>
+                    <p className="mt-2 text-[8px] text-slate-600">{scenario.note}</p>
+                  </div>
+                  <p className="mt-3 text-[10px] font-semibold text-sky-400">Open controlled run ↗</p>
+                </a>
+              );
+            })}
           </div>
         </section>
 
