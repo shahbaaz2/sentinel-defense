@@ -35,6 +35,14 @@ async function getJSON<T>(path: string): Promise<T | null> {
   }
 }
 
+const SCENARIOS = [
+  { id: "SCN-010", title: "Multi-Signal Compromise", type: "End-to-end", expected: "5 detections · 3 incidents" },
+  { id: "SCN-001", title: "Credential Pressure", type: "Identity", expected: "DET-001" },
+  { id: "SCN-002", title: "Service Identity Compromise", type: "Service identity", expected: "DET-006" },
+  { id: "SCN-003", title: "Critical Service Degradation", type: "Asset state", expected: "DET-002" },
+  { id: "SCN-004", title: "Data Access Burst", type: "Behavioral", expected: "DET-003" },
+] as const;
+
 export default async function Home() {
   const [assurance, metrics] = await Promise.all([
     getJSON<Assurance>("/api/v1/system/assurance"),
@@ -44,48 +52,85 @@ export default async function Home() {
   const aiStatus = assurance?.ai_analyst_status ?? metrics?.ai_analyst_status ?? "UNKNOWN";
 
   return (
-    <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex w-full max-w-4xl flex-col gap-8 px-8 py-16">
-        <div className="flex flex-col gap-4">
-          <span className="w-fit rounded bg-amber-500/20 px-2 py-1 text-xs font-semibold tracking-wide text-amber-700 dark:text-amber-400">
-            SYNTHETIC LAB — DEFENSIVE ONLY
-          </span>
+    <main className="min-h-screen">
+      <header className="border-b border-slate-800 bg-[#091521]/90 px-5 py-4 backdrop-blur lg:px-7">
+        <div className="mx-auto flex w-full max-w-[1680px] flex-col justify-between gap-4 xl:flex-row xl:items-center">
           <div>
-            <h1 className="text-3xl font-semibold tracking-tight text-black dark:text-zinc-50">
-              Mission Cyber Posture
-            </h1>
-            <p className="mt-2 text-zinc-600 dark:text-zinc-400">
-              Deterministic detection and correlation with an evidence-grounded AI Analyst.
-              <span className="font-medium"> AI Analyst: {aiStatus}</span>
-              {assurance?.inference_location ? ` · ${assurance.inference_location}` : ""}
+            <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-slate-600">
+              <span>Security Operations</span><span>/</span><span className="text-slate-400">Security Posture</span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight text-white">Sentinel Security Posture</h1>
+              <span className="rounded border border-amber-500/25 bg-amber-500/5 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-amber-300">Synthetic lab · defensive only</span>
+            </div>
+            <p className="mt-1 max-w-4xl text-xs leading-5 text-slate-400">
+              Live visibility across protected assets, normalized evidence, deterministic detections, investigations, response controls, and advisory intelligence.
             </p>
           </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <a
-              href={LIVE_DEMO_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-md bg-black px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
-            >
-              LAUNCH IMMERSIVE LIVE DEMO ↗
-            </a>
-            <Link
-              href="/incidents"
-              className="rounded-md border border-zinc-300 px-5 py-2.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
-            >
-              View Incidents
-            </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded border border-slate-700 bg-[#0d1b29] px-3 py-2 text-[10px] text-slate-400">AI Analyst <strong className="ml-1 text-slate-200">{aiStatus}</strong></span>
+            <a href={`${LIVE_DEMO_URL}#SCN-010`} target="_blank" rel="noreferrer" className="rounded bg-sky-500 px-4 py-2 text-[11px] font-bold text-slate-950 transition hover:bg-sky-400">Launch Scenario Console ↗</a>
           </div>
-          <p className="max-w-2xl text-xs text-zinc-500">
-            Launch the flagship SCN-010 GUI replay to watch synthetic credential pressure and mission-service
-            degradation produce real Sentinel detections, correlated incidents, evidence verification, and a
-            guided handoff into AI-assisted, human-approved response.
-          </p>
         </div>
+      </header>
 
+      <div className="mx-auto w-full max-w-[1680px] space-y-5 p-5 lg:p-7">
         <OverviewLive initialMetrics={metrics} initialAssurance={assurance} />
-      </main>
-    </div>
+
+        <section className="soc-panel rounded-lg">
+          <div className="flex flex-col justify-between gap-3 border-b border-slate-800 px-5 py-4 sm:flex-row sm:items-center">
+            <div>
+              <p className="soc-kicker">Controlled validation library</p>
+              <h2 className="mt-1 text-sm font-semibold text-white">Scenario Operations</h2>
+              <p className="mt-1 text-[11px] text-slate-500">Every scenario opens in the same enterprise security console and uses real persisted run evidence.</p>
+            </div>
+            <span className="rounded border border-slate-700 bg-[#0d1b29] px-2.5 py-1 text-[10px] font-mono text-slate-400">5 employer-demo workflows</span>
+          </div>
+          <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-5">
+            {SCENARIOS.map((scenario) => (
+              <a
+                key={scenario.id}
+                href={`${LIVE_DEMO_URL}#${scenario.id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="group rounded-lg border border-slate-800 bg-[#0d1b29] p-4 transition hover:-translate-y-0.5 hover:border-sky-500/40 hover:bg-[#102131]"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] font-bold text-sky-300">{scenario.id}</span>
+                  <span className="text-[9px] uppercase tracking-wider text-slate-600">{scenario.type}</span>
+                </div>
+                <h3 className="mt-3 min-h-10 text-xs font-semibold leading-5 text-slate-200 group-hover:text-white">{scenario.title}</h3>
+                <div className="mt-3 border-t border-slate-800 pt-3">
+                  <p className="text-[9px] uppercase tracking-wider text-slate-600">Expected security result</p>
+                  <p className="mt-1 text-[10px] font-medium text-slate-400">{scenario.expected}</p>
+                </div>
+                <p className="mt-3 text-[10px] font-semibold text-sky-400">Open controlled run ↗</p>
+              </a>
+            ))}
+          </div>
+        </section>
+
+        <section className="grid gap-4 xl:grid-cols-3">
+          <Link href="/incidents" className="soc-panel-soft rounded-lg p-4 transition hover:border-sky-500/30">
+            <p className="soc-kicker">Investigation workflow</p>
+            <h3 className="mt-2 text-sm font-semibold text-white">Evidence-backed incidents</h3>
+            <p className="mt-2 text-[11px] leading-5 text-slate-500">Review correlated detections, evidence links, AI advisory output, and bounded analyst response actions.</p>
+            <p className="mt-4 text-[10px] font-semibold text-sky-400">Open investigations →</p>
+          </Link>
+          <Link href="/detection-coverage" className="soc-panel-soft rounded-lg p-4 transition hover:border-sky-500/30">
+            <p className="soc-kicker">Detection engineering</p>
+            <h3 className="mt-2 text-sm font-semibold text-white">Rule & ATT&CK coverage</h3>
+            <p className="mt-2 text-[11px] leading-5 text-slate-500">Inspect real rule validation status, event categories, ATT&CK mapping, and scenario coverage.</p>
+            <p className="mt-4 text-[10px] font-semibold text-sky-400">View detection coverage →</p>
+          </Link>
+          <Link href="/data-sources" className="soc-panel-soft rounded-lg p-4 transition hover:border-sky-500/30">
+            <p className="soc-kicker">Enterprise ecosystem</p>
+            <h3 className="mt-2 text-sm font-semibold text-white">Sensors & integrations</h3>
+            <p className="mt-2 text-[11px] leading-5 text-slate-500">See MissionNet, Suricata, Zeek, Splunk, Wazuh, Falco, and the vendor-neutral ingestion boundary.</p>
+            <p className="mt-4 text-[10px] font-semibold text-sky-400">Explore data sources →</p>
+          </Link>
+        </section>
+      </div>
+    </main>
   );
 }
