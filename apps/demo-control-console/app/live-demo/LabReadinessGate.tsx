@@ -6,6 +6,10 @@ const DEMO_API =
   process.env.NEXT_PUBLIC_DEMOCONTROL_API_BASE_URL ?? "http://127.0.0.1:8100";
 const SENTINEL_DASHBOARD =
   process.env.NEXT_PUBLIC_SENTINEL_DASHBOARD_URL ?? "https://sentinel-defense-g6id.vercel.app";
+const MISSIONNET_WAKE_URL =
+  process.env.NEXT_PUBLIC_MISSIONNET_WAKE_URL ?? "https://sentinel-defense-hes7.onrender.com/health";
+const SENTINEL_WAKE_URL =
+  process.env.NEXT_PUBLIC_SENTINEL_API_WAKE_URL ?? "https://sentinel-api-ie2z.onrender.com/api/v1/health";
 
 type Probe = {
   ready: boolean;
@@ -33,6 +37,14 @@ function tone(status: string) {
   return "border-amber-500/30 bg-amber-500/5 text-amber-300";
 }
 
+function wakeBackendServices() {
+  // These no-cors GETs are intentionally fire-and-forget. Their purpose is only to trigger the
+  // public Render services to spin up in parallel while Demo Control itself is waking. Readiness is
+  // still determined by Demo Control's /warmup endpoint before run controls are shown.
+  void fetch(MISSIONNET_WAKE_URL, { mode: "no-cors", cache: "no-store" }).catch(() => undefined);
+  void fetch(SENTINEL_WAKE_URL, { mode: "no-cors", cache: "no-store" }).catch(() => undefined);
+}
+
 export function LabReadinessGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<WarmupState | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -41,6 +53,7 @@ export function LabReadinessGate({ children }: { children: React.ReactNode }) {
   const mounted = useRef(true);
 
   const probe = useCallback(async () => {
+    wakeBackendServices();
     try {
       const response = await fetch(`${DEMO_API}/api/v1/warmup`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -58,6 +71,8 @@ export function LabReadinessGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     mounted.current = true;
+    // Start all three cloud wake-ups immediately instead of waiting for Demo Control to wake first.
+    wakeBackendServices();
     void probe();
     const poller = window.setInterval(() => void probe(), 3000);
     const clock = window.setInterval(() => setElapsed((seconds) => seconds + 1), 1000);
@@ -84,7 +99,7 @@ export function LabReadinessGate({ children }: { children: React.ReactNode }) {
                 <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-sky-400">Sentinel controlled validation</p>
                 <h1 className="mt-1 text-xl font-semibold text-white">Preparing the security lab</h1>
                 <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
-                  The console is waking and verifying its cloud dependencies before exposing the Run control. No scenario is created until MissionNet and Sentinel are genuinely ready.
+                  MissionNet, Sentinel API, and Demo Control are being woken in parallel and verified before the Run control is exposed. No scenario is created until the lab is genuinely ready.
                 </p>
               </div>
               <div className="shrink-0 border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-center">
@@ -118,11 +133,11 @@ export function LabReadinessGate({ children }: { children: React.ReactNode }) {
               <div>
                 <p className="text-xs font-medium text-slate-300">
                   {longWait
-                    ? "Cloud startup is taking longer than usual, but Sentinel is still retrying automatically."
-                    : "The lab will open automatically as soon as both backend services are ready."}
+                    ? "Cloud startup is taking longer than usual, but the services are still being retried automatically in parallel."
+                    : "The scenario console will open automatically as soon as the backend is ready."}
                 </p>
                 <p className="mt-1 text-[10px] text-slate-600">
-                  This startup gate prevents the previous PREPARING → timeout failure from being shown as a scenario result.
+                  This startup gate prevents a cold cloud service from becoming a failed security scenario.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -131,6 +146,7 @@ export function LabReadinessGate({ children }: { children: React.ReactNode }) {
                   disabled={manualRetry}
                   onClick={() => {
                     setManualRetry(true);
+                    wakeBackendServices();
                     void probe();
                   }}
                   className="border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-[10px] font-semibold text-sky-200 transition hover:border-sky-400/60 disabled:opacity-50"
