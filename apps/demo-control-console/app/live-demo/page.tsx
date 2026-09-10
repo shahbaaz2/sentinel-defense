@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { LabReadinessGate } from "./LabReadinessGate";
 import { SplunkSecurityDashboard } from "./SplunkSecurityDashboard";
 
 const SENTINEL_DASHBOARD =
@@ -24,7 +25,9 @@ export default function LiveDemoPage() {
           </div>
         </div>
       </div>
-      <SplunkSecurityDashboard />
+      <LabReadinessGate>
+        <SplunkSecurityDashboard />
+      </LabReadinessGate>
     </>
   );
 }
