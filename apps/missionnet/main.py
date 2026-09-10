@@ -18,7 +18,23 @@ app.include_router(lab_router)
 
 
 @app.get("/health")
-async def health(session: AsyncSession = Depends(get_session)):
+async def health():
+    """Fast liveness probe used by the cloud runtime.
+
+    Keep this endpoint independent of PostgreSQL so a sleeping free-tier instance can be marked
+    alive as soon as the application process is accepting HTTP traffic. Database-backed readiness
+    is still verified through /state before Demo Control allows a scenario to execute.
+    """
+    return {
+        "status": "HEALTHY",
+        "classification": "SYNTHETIC",
+        "service": "missionnet",
+    }
+
+
+@app.get("/ready")
+async def ready(session: AsyncSession = Depends(get_session)):
+    """Database-aware readiness probe for operators and orchestration."""
     state = await compute_system_state(session)
     return {
         "status": state.status,
