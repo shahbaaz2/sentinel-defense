@@ -11,9 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.demo_control.config import settings
 from apps.demo_control.routes import router as demo_control_router
+from apps.demo_control.warmup import router as warmup_router
 
 app = FastAPI(title="Sentinel Demo Control", version="0.1.0")
 app.include_router(demo_control_router)
+app.include_router(warmup_router)
 
 # The Demo Control Console (Next.js) calls this API directly from browser JS - a different origin,
 # so it needs CORS enabled. Origins come from settings (DEMOCONTROL_CORS_ALLOWED_ORIGINS) so a
